@@ -12,9 +12,13 @@ from simulator.stream_simulator import StreamSimulator
 from backend.analytics_runner import AnalyticsRunner
 from backend.trip_manager import TripManager
 from backend.earnings_predictor import EarningsPredictor
+from backend.offline_queue import read_all
+from backend.trip_storage import TripStorage
 
 app = FastAPI()
-
+trips_path = "data/trips.csv"
+earnings_path = "data/earnings.csv"
+goals_path = "data/driver_goals.csv"
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -39,10 +43,10 @@ except Exception:
 
 # components
 simulator = StreamSimulator()
-analytics_runner = AnalyticsRunner(models_dir=os.path.join(os.path.dirname(__file__), "models"))
+analytics_runner = AnalyticsRunner()
 trip_manager = TripManager()
-earnings_predictor = EarningsPredictor(goals_path=GOALS_PATH, trips_path=TRIPS_PATH, earnings_path=EARNINGS_PATH)
-
+earnings_predictor = EarningsPredictor()
+trip_storage = TripStorage()
 # request models
 class LoginRequest(BaseModel):
     driver_id: str
@@ -136,31 +140,47 @@ def start_trip(driver_id: str):
 
 @app.get("/trip_step/{trip_id}")
 def trip_step(trip_id: str):
+    # returns motion, audio, stress computed live by TripManager and recent events
+    motion, audio, stress = trip_manager.step_trip(trip_id)
+    # cast numpy types to float for JSON safety
+    def _to_safe(x):
+        try:
+            if isinstance(x, (np.floating, np.integer)):
+                return float(x)
+            return x
+        except Exception:
+            return x
+    # return events stored in trip_manager if any
+    events = []
     try:
-        motion, audio, stress = trip_manager.step_trip(trip_id)
-    except KeyError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    # Make sure objects are JSON serializable
-    audio_safe = audio if isinstance(audio, dict) else (audio.to_dict() if hasattr(audio, "to_dict") else {})
-    motion_safe = motion if isinstance(motion, dict) else (motion.to_dict() if hasattr(motion, "to_dict") else {})
-    # cast stress floats
-    stress_safe = {k: (float(v) if isinstance(v, (int, float,  np.floating, np.integer)) else v) for k,v in stress.items()}
-    return {"motion": motion_safe, "audio": audio_safe, "stress": stress_safe}
+        events = trip_manager.active_trips[trip_id]["events"][-10:]
+    except Exception:
+        events = []
+    stress_safe = {k: (float(v) if isinstance(v, (int, float)) else v) for k,v in stress.items()}
+    return {
+        "motion": motion,
+        "audio": audio,
+        "stress": stress_safe,
+        "events": events
+    }
+
 
 @app.post("/end_trip/{trip_id}")
 def end_trip(trip_id: str, req: EndTripRequest):
-    # End trip and get data + in-memory events
-    try:
-        accel, audio, driver_id, events = trip_manager.end_trip(trip_id)
-    except KeyError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    # End the trip in TripManager and gather data (now includes events)
+    result = trip_manager.end_trip(trip_id)
 
-    # Run analytics (this uses models to compute flagged moments and trip summary)
-    result = analytics_runner.run_pipeline(accel, audio, trip_id=trip_id)
+    if result[0] is None:
+        return {"status":"trip already ended"}
 
-    # compute start/end/duration
+    accel, audio, driver_id, events = result
+
+    # Run analytics (pass events list so clustering works)
+    result = analytics_runner.run_pipeline(accel, audio, pd.read_csv(trips_path), trip_id=trip_id, flagged_events=events)
+
+    # Build completed trip row (fill in trips.csv)
     try:
-        start_dt = pd.to_datetime(accel["start_datetime"].iloc[0])
+        start_dt = pd.to_datetime(accel["timestamp"].iloc[0])
         end_dt = pd.to_datetime(accel["timestamp"].iloc[-1])
         duration_min = (end_dt - start_dt).total_seconds() / 60.0
     except Exception:
@@ -168,21 +188,17 @@ def end_trip(trip_id: str, req: EndTripRequest):
         end_dt = datetime.now()
         duration_min = 0.0
 
-    # estimate distance
     distance_km = 0.0
-    try:
-        if "speed_kmh" in accel.columns and len(accel)>0:
-            avg_speed = float(accel["speed_kmh"].mean())
-            distance_km = avg_speed * (duration_min/60.0)
-    except Exception:
-        distance_km = 0.0
+    if "speed_kmh" in accel.columns and len(accel) > 0:
+        avg_speed = accel["speed_kmh"].mean()
+        distance_km = float(avg_speed) * (duration_min / 60.0)
 
     fare_val = float(req.earnings or 0.0)
 
-    # Update trips.csv (update starter row)
+    # update trips.csv
     try:
-        trips_df = pd.read_csv(TRIPS_PATH)
-    except Exception:
+        trips_df = pd.read_csv(trips_path)
+    except FileNotFoundError:
         trips_df = pd.DataFrame(columns=["trip_id","driver_id","start_datetime","end_datetime","duration_min","distance_km","fare","surge_multiplier"])
 
     idx = trips_df[trips_df["trip_id"] == trip_id].index
@@ -207,13 +223,14 @@ def end_trip(trip_id: str, req: EndTripRequest):
         }
         trips_df = pd.concat([trips_df, pd.DataFrame([new_trip_row])], ignore_index=True)
 
-    trips_df.to_csv(TRIPS_PATH, index=False)
+    trips_df.to_csv(trips_path, index=False)
 
-    # Append to earnings.csv (minimal row)
+    # append to earnings.csv
     try:
-        earnings_df = pd.read_csv(EARNINGS_PATH)
-    except Exception:
+        earnings_df = pd.read_csv(earnings_path)
+    except FileNotFoundError:
         earnings_df = pd.DataFrame(columns=["log_id","driver_id","date","timestamp","cumulative_earnings","elapsed_hours","current_velocity","target_velocity","velocity_delta","trips_completed","forecast_status","behind_target","trip_id","fare"])
+
     new_earn_row = {
         "log_id": "",
         "driver_id": driver_id,
@@ -230,14 +247,31 @@ def end_trip(trip_id: str, req: EndTripRequest):
         "trip_id": trip_id,
         "fare": round(fare_val, 2)
     }
-    earnings_df = pd.concat([earnings_df, pd.DataFrame([new_earn_row])], ignore_index=True)
-    earnings_df.to_csv(EARNINGS_PATH, index=False)
 
-    # return analytics summaries to frontend
+    earnings_df = pd.concat([earnings_df, pd.DataFrame([new_earn_row])], ignore_index=True)
+    earnings_df.to_csv(earnings_path, index=False)
+
+    # optionally persist summary somewhere (trip_storage)
+    if trip_storage:
+        try:
+            trip_storage.save_trip(result.get("trip_summary"))
+        except Exception:
+            pass
+
+    # optionally save incidents to outputs/ (human-readable)
+    try:
+        os.makedirs(os.path.join(os.path.dirname(__file__), "..", "outputs"), exist_ok=True)
+        inc_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "outputs", f"incidents_{trip_id}.csv"))
+        if result.get("incidents") is not None and len(result.get("incidents"))>0:
+            result["incidents"].to_csv(inc_path, index=False)
+    except Exception:
+        pass
+
+    # Return summary + incidents + flagged
     return {
         "summary": result.get("trip_summary").to_dict(orient="records") if result.get("trip_summary") is not None else [],
         "flags": result.get("flagged").to_dict(orient="records") if result.get("flagged") is not None else [],
-        "flags_raw": result.get("flagged_raw").to_dict(orient="records") if result.get("flagged_raw") is not None else []
+        "incidents": result.get("incidents").to_dict(orient="records") if result.get("incidents") is not None else []
     }
 
 @app.get("/driver_today_stats/{driver_id}")
@@ -251,3 +285,21 @@ def today_stats(driver_id: str):
         "predicted_end": round(float(predicted), 2),
         "goal_probability": float(prob)
     }
+
+@app.get("/driver_goal/{driver_id}")
+def driver_goal(driver_id: str):
+    info = earnings_predictor.goal_target_and_progress(driver_id)
+    return {"target": round(float(info.get("target",0)),2), "progress": float(info.get("progress",0))}
+
+@app.get("/live_events/{driver_id}")
+def live_events(driver_id: str):
+    # returns queued offline events + any in-memory active trips
+    queued = read_all()  # offline queue
+    inmem = []
+    for t, v in trip_manager.active_trips.items():
+        if v["driver_id"] == driver_id:
+            inmem.extend(v.get("events", []))
+    # combine and dedupe by timestamp+trip_id
+    all_events = queued + inmem
+    # limit to last 200
+    return all_events[-200:]

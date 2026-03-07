@@ -2,15 +2,28 @@
 
 import { useEffect, useState, useRef } from "react"
 import axios from "axios"
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip } from "recharts"
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer
+} from "recharts"
 
-function Dashboard({driver}){
+function Dashboard({ driver }) {
 
   const [trips,setTrips] = useState([])
   const [earnings,setEarnings] = useState([])
   const [stressData,setStressData] = useState([])
   const [liveEvents,setLiveEvents] = useState([])
+
   const [todayStats,setTodayStats] = useState(null)
+
+  const [goalTarget,setGoalTarget] = useState(0)
+  const [goalProgress,setGoalProgress] = useState(0)
+
   const [riskLevel,setRiskLevel] = useState("SAFE")
 
   const [activeTrip,setActiveTrip] = useState(null)
@@ -23,8 +36,10 @@ function Dashboard({driver}){
     loadTrips()
     loadEarnings()
     loadStats()
+    loadGoal()
 
   },[])
+
 
   const loadTrips = async () => {
 
@@ -36,6 +51,7 @@ function Dashboard({driver}){
 
   }
 
+
   const loadEarnings = async () => {
 
     const res = await axios.get(
@@ -46,6 +62,7 @@ function Dashboard({driver}){
 
   }
 
+
   const loadStats = async () => {
 
     const res = await axios.get(
@@ -55,6 +72,19 @@ function Dashboard({driver}){
     setTodayStats(res.data)
 
   }
+
+
+  const loadGoal = async () => {
+
+    const res = await axios.get(
+      `http://localhost:8000/driver_goal/${driver.driver_id}`
+    )
+
+    setGoalTarget(res.data.target)
+    setGoalProgress(res.data.progress)
+
+  }
+
 
   const startTrip = async () => {
 
@@ -74,6 +104,7 @@ function Dashboard({driver}){
 
   }
 
+
   const startSimulation = (tripId) => {
 
     intervalRef.current = setInterval(async () => {
@@ -84,23 +115,23 @@ function Dashboard({driver}){
 
       const audio = res.data.audio
       const stress = res.data.stress
-      console.log("Stress step:", stress)
+
       if(!stress) return
 
       const stressValue = stress.stress || 0
 
       setStressData(prev => [
         ...prev,
-        {
-          time: prev.length,
-          stress: stressValue
-        }
+        { time: prev.length, stress: stressValue }
       ])
 
-      // Risk meter
+
+      // DRIVER RISK LEVEL
+
       if(stressValue > 0.75) setRiskLevel("HIGH")
       else if(stressValue > 0.5) setRiskLevel("MODERATE")
       else setRiskLevel("SAFE")
+
 
       if(stress.flagged){
 
@@ -108,7 +139,7 @@ function Dashboard({driver}){
           ...prev,
           {
             time: prev.length,
-            type: audio?.audio_classification || "risk",
+            type: audio?.audio_classification || "stress",
             db: audio?.audio_level_db || 0,
             risk: stressValue,
             model_used: stress.model_used
@@ -121,9 +152,13 @@ function Dashboard({driver}){
 
   }
 
+
   const endTrip = async () => {
 
+    if(intervalRef.current){
     clearInterval(intervalRef.current)
+    intervalRef.current = null
+  }
 
     const earningsInput = prompt("Enter trip earnings")
 
@@ -138,10 +173,12 @@ function Dashboard({driver}){
     loadTrips()
     loadEarnings()
     loadStats()
+    loadGoal()
 
     alert("Trip completed")
 
   }
+
 
   const card = {
     background:"#0f1724",
@@ -151,17 +188,20 @@ function Dashboard({driver}){
     color:"#e6eef8"
   }
 
+
   const riskColor = {
     SAFE:"#22c55e",
     MODERATE:"#f59e0b",
     HIGH:"#ef4444"
   }
 
+
   return(
 
     <div style={{padding:40, background:"#0b1220", minHeight:"100vh", color:"#e6eef8"}}>
 
       <h2 style={{color:"#cfe8ff"}}>Welcome {driver.name}</h2>
+
 
       <div style={{marginBottom:20}}>
 
@@ -178,6 +218,7 @@ function Dashboard({driver}){
         )}
 
       </div>
+
 
       {/* DRIVER RISK METER */}
 
@@ -196,7 +237,8 @@ function Dashboard({driver}){
       </div>
 
 
-      {/* STATS */}
+
+      {/* STATS SECTION */}
 
       <div style={{
         display:"grid",
@@ -204,6 +246,7 @@ function Dashboard({driver}){
         gap:"20px",
         marginBottom:"20px"
       }}>
+
 
         <div style={card}>
 
@@ -213,39 +256,53 @@ function Dashboard({driver}){
 
           <p>Predicted End: ₹{todayStats?.predicted_end || 0}</p>
 
-          <p>Goal Probability: {(todayStats?.goal_probability*100 || 0).toFixed(1)}%</p>
+          <p>
+            Goal Probability: {(todayStats?.goal_probability*100 || 0).toFixed(1)}%
+          </p>
+
+          <p>
+            Goal Target: ₹{goalTarget || 0}
+          </p>
+
+          <p>
+            Progress: {(goalProgress*100 || 0).toFixed(1)}%
+          </p>
 
         </div>
+
 
 
         <div style={card}>
 
-          <h3>Earnings vs Prediction</h3>
+          <h3>Earnings vs Goal</h3>
 
-          <LineChart
-            width={500}
-            height={250}
-            data={[
-              {name:"Current",value:todayStats?.today_earnings || 0},
-              {name:"Predicted",value:todayStats?.predicted_end || 0}
-            ]}
-          >
+          <ResponsiveContainer width="100%" height={250}>
 
-            <CartesianGrid strokeDasharray="3 3"/>
+            <LineChart
+              data={[
+                {name:"Current",value:todayStats?.today_earnings || 0},
+                {name:"Goal",value:goalTarget || 0}
+              ]}
+            >
 
-            <XAxis dataKey="name" stroke="#e6eef8"/>
+              <CartesianGrid strokeDasharray="3 3"/>
 
-            <YAxis stroke="#e6eef8"/>
+              <XAxis dataKey="name" stroke="#e6eef8"/>
 
-            <Tooltip/>
+              <YAxis stroke="#e6eef8"/>
 
-            <Line type="monotone" dataKey="value" stroke="#60a5fa"/>
+              <Tooltip/>
 
-          </LineChart>
+              <Line type="monotone" dataKey="value" stroke="#60a5fa"/>
+
+            </LineChart>
+
+          </ResponsiveContainer>
 
         </div>
 
       </div>
+
 
 
       {/* STRESS GRAPH */}
@@ -254,21 +311,26 @@ function Dashboard({driver}){
 
         <h3>Stress Timeline</h3>
 
-        <LineChart width={900} height={300} data={stressData}>
+        <ResponsiveContainer width="100%" height={300}>
 
-          <CartesianGrid strokeDasharray="3 3"/>
+          <LineChart data={stressData}>
 
-          <XAxis dataKey="time" stroke="#e6eef8"/>
+            <CartesianGrid strokeDasharray="3 3"/>
 
-          <YAxis stroke="#e6eef8"/>
+            <XAxis dataKey="time" stroke="#e6eef8"/>
 
-          <Tooltip/>
+            <YAxis stroke="#e6eef8"/>
 
-          <Line type="monotone" dataKey="stress" stroke="#fb7185"/>
+            <Tooltip/>
 
-        </LineChart>
+            <Line type="monotone" dataKey="stress" stroke="#fb7185"/>
+
+          </LineChart>
+
+        </ResponsiveContainer>
 
       </div>
+
 
 
       {/* LOWER GRID */}
@@ -278,6 +340,10 @@ function Dashboard({driver}){
         gridTemplateColumns:"1fr 1fr 1fr",
         gap:"20px"
       }}>
+
+
+
+        {/* LIVE EVENTS */}
 
         <div style={card}>
 
@@ -309,6 +375,9 @@ function Dashboard({driver}){
         </div>
 
 
+
+        {/* TRIPS */}
+
         <div style={card}>
 
           <h3>Trips Today</h3>
@@ -322,6 +391,9 @@ function Dashboard({driver}){
         </div>
 
 
+
+        {/* EARNINGS */}
+
         <div style={card}>
 
           <h3>Earnings</h3>
@@ -333,6 +405,7 @@ function Dashboard({driver}){
           ))}
 
         </div>
+
 
       </div>
 

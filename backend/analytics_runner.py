@@ -1,126 +1,95 @@
 # backend/analytics_runner.py
 import pandas as pd
 import numpy as np
-from backend.live_stress_engine import LiveStressEngine
-from backend.event_clustering import cluster_flagged_events
 from datetime import datetime
+from backend.event_clusterer import cluster_events
 
 class AnalyticsRunner:
-    def __init__(self, audio_training_data=None, models_dir=None):
-        # audio_training_data kept for backward compat; not required now
-        self.engine = LiveStressEngine(models_dir=models_dir)
+    def __init__(self, audio_training_df=None):
+        # audio_training is optional; we might use it to calibrate thresholds later
+        self.audio_training = audio_training_df
 
-    def run_pipeline(self, accel_df, audio_df, trips_df=None, trip_id=None):
+    def run_pipeline(self, accel_df, audio_df, trips_df=None, trip_id=None, flagged_events=None):
         """
-        accel_df, audio_df : pandas DataFrames (can be empty)
-        trips_df : optional reference data
-        trip_id: optional trip_id string
-        Returns dict: trip_summary (DataFrame), flagged (DataFrame)
+        accel_df, audio_df: DataFrames from simulator for this trip.
+        trips_df: current trips.csv (for context)
+        flagged_events: list of raw event dicts collected during trip
+        Returns:
+            {
+                "trip_summary": DataFrame (1-row) with computed fields,
+                "flagged": DataFrame of raw flagged moments,
+                "incidents": DataFrame of clustered incidents
+            }
         """
-        # defensive
-        if accel_df is None:
-            accel_df = pd.DataFrame()
-        if audio_df is None:
-            audio_df = pd.DataFrame()
-
-        # ensure timestamps exist
-        if "timestamp" in audio_df.columns:
-            audio_df["timestamp"] = pd.to_datetime(audio_df["timestamp"], errors="coerce")
-        else:
-            audio_df["timestamp"] = pd.Timestamp(datetime.now())
-
-        flagged_records = []
-        stress_series = []
-
-        # iterate audio rows and evaluate stress
-        for idx, row in audio_df.iterrows():
-            audio_row = row.to_dict()
-            # for motion we choose nearest accel row by index if available
-            motion_row = {}
-            if idx < len(accel_df):
-                motion_row = accel_df.iloc[idx].to_dict()
-            elif len(accel_df) > 0:
-                motion_row = accel_df.iloc[-1].to_dict()
-
-            res = self.engine.evaluate(motion_row, audio_row)
-
-            # normalize output fields
-            stress = float(res.get("stress", 0.0))
-            flagged = bool(res.get("flagged", False))
-            audio_score = float(res.get("audio_score", 0.0))
-            motion_score = float(res.get("motion_score", 0.0))
-            model_used = str(res.get("model_used", "heuristic"))
-
-            stress_series.append({
-                "timestamp": audio_row.get("timestamp"),
-                "stress": stress,
-                "flagged": flagged,
-                "audio_score": audio_score,
-                "motion_score": motion_score,
-                "model_used": model_used,
-                "db": float(audio_row.get("audio_level_db", 0.0)),
-                "type": audio_row.get("audio_classification", "")
-            })
-
-            if flagged:
-                flagged_records.append({
-                    "timestamp": audio_row.get("timestamp"),
-                    "elapsed_seconds": audio_row.get("elapsed_seconds", None),
-                    "db": float(audio_row.get("audio_level_db", 0.0)),
-                    "type": audio_row.get("audio_classification", ""),
-                    "trip_id": trip_id or audio_row.get("trip_id", None)
-                })
-
-        stress_df = pd.DataFrame(stress_series)
-        flagged_df = pd.DataFrame(flagged_records)
-
-        # cluster flagged events and produce cluster summary
-        if not flagged_df.empty:
-            clustered_events_df, clusters_df = cluster_flagged_events(flagged_df)
-        else:
-            clustered_events_df = pd.DataFrame()
-            clusters_df = pd.DataFrame()
-
-        # trip summary (basic aggregates)
+        # Normalize inputs
         try:
-            avg_speed = float(accel_df["speed_kmh"].mean()) if ("speed_kmh" in accel_df.columns and len(accel_df)>0) else 0.0
+            if accel_df is None:
+                accel_df = pd.DataFrame()
+            if audio_df is None:
+                audio_df = pd.DataFrame()
+            if isinstance(flagged_events, list):
+                flagged_df = pd.DataFrame(flagged_events)
+            else:
+                # try reading flagged moments from audio_df if present
+                flagged_df = pd.DataFrame(columns=["trip_id","timestamp","type","db","risk_score"])
         except Exception:
-            avg_speed = 0.0
-        try:
-            max_db = float(audio_df["audio_level_db"].max()) if ("audio_level_db" in audio_df.columns and len(audio_df)>0) else 0.0
-        except Exception:
-            max_db = 0.0
+            flagged_df = pd.DataFrame(columns=["trip_id","timestamp","type","db","risk_score"])
 
+        # compute basic trip stats
+        start_dt = None
+        end_dt = None
+        duration_min = 0.0
+        distance_km = 0.0
+        if not accel_df.empty:
+            # expect accel_df to have 'timestamp' and possibly 'speed_kmh'
+            try:
+                accel_df["timestamp"] = pd.to_datetime(accel_df["timestamp"], errors="coerce")
+                start_dt = accel_df["timestamp"].min()
+                end_dt = accel_df["timestamp"].max()
+                duration_min = (end_dt - start_dt).total_seconds() / 60.0 if pd.notnull(end_dt) and pd.notnull(start_dt) else 0.0
+                if "speed_kmh" in accel_df.columns and len(accel_df) > 0:
+                    avg_speed = accel_df["speed_kmh"].mean()
+                    distance_km = float(avg_speed) * (duration_min / 60.0)
+            except Exception:
+                pass
+
+        # safety score: simple aggregate of risk scores + sustained stress
+        # flagged_df risk_score should be present if events were collected
+        avg_risk = float(flagged_df["risk_score"].astype(float).mean()) if (not flagged_df.empty and "risk_score" in flagged_df.columns) else 0.0
+        incidents = cluster_events(flagged_df) if not flagged_df.empty else pd.DataFrame(columns=["trip_id","incident_id","start_time","end_time","duration_sec","peak_db","avg_risk","types","count"])
+
+        # safety score normalized: start at 1 (perfect) and reduce by incidents influence
+        # keep between 0..1 (1 safe, 0 unsafe)
+        safety_penalty = min(1.0, avg_risk + 0.1 * len(incidents))
+        safety_score = max(0.0, 1.0 - safety_penalty)
+
+        # fatigue detection (very simple rule-based)
+        fatigue_prob = 0.0
+        if duration_min >= 240:  # 4+ hours
+            fatigue_prob = 0.6
+        # increase fatigue if many incidents or high stress variance in audio_df
+        if not audio_df.empty and "audio_level_db" in audio_df.columns:
+            var = float(audio_df["audio_level_db"].var() or 0)
+            if var > 40:
+                fatigue_prob = min(1.0, fatigue_prob + 0.2)
+        fatigue_prob = min(1.0, fatigue_prob)
+
+        # build trip_summary row
         trip_summary = pd.DataFrame([{
-            "trip_id": trip_id,
-            "avg_speed_kmh": round(avg_speed, 3),
-            "max_db": round(max_db, 2),
-            "flagged_events": int(len(flagged_df)),
-            "clustered_moments": int(len(clusters_df)),
-            "max_stress": round(stress_df["stress"].max() if not stress_df.empty else 0.0, 3),
-            "mean_stress": round(stress_df["stress"].mean() if not stress_df.empty else 0.0, 3)
+            "trip_id": trip_id if trip_id is not None else (flagged_df["trip_id"].iloc[0] if not flagged_df.empty else ""),
+            "start_datetime": start_dt.strftime("%Y-%m-%d %H:%M:%S") if start_dt is not None else "",
+            "end_datetime": end_dt.strftime("%Y-%m-%d %H:%M:%S") if end_dt is not None else "",
+            "duration_min": round(duration_min, 2),
+            "distance_km": round(distance_km, 3),
+            "avg_risk": round(avg_risk, 3),
+            "incidents": len(incidents),
+            "safety_score": round(safety_score, 3),
+            "fatigue_prob": round(fatigue_prob, 3)
         }])
 
-        # ensure JSON-safe dtypes
-        for df in (clustered_events_df, clusters_df, flagged_df, stress_df, trip_summary):
-            if df is None:
-                continue
-            for col in df.columns:
-                if pd.api.types.is_float_dtype(df[col]):
-                    df[col] = df[col].fillna(0.0).astype(float)
-                if pd.api.types.is_integer_dtype(df[col]):
-                    df[col] = df[col].fillna(0).astype(int)
-                # timestamps -> ISO
-                if "timestamp" == col or df[col].dtype == "datetime64[ns]":
-                    try:
-                        df[col] = pd.to_datetime(df[col], errors="coerce").dt.strftime("%Y-%m-%d %H:%M:%S")
-                    except Exception:
-                        pass
-
-        return {
-            "motion_events": accel_df,
-            "audio_events": audio_df,
-            "flagged": clusters_df,               # clusters summary (moments)
-            "flagged_raw": clustered_events_df,   # per-event with cluster_id
-            "trip_summary": trip_summary
+        result = {
+            "trip_summary": trip_summary,
+            "flagged": flagged_df,
+            "incidents": incidents
         }
+        return result

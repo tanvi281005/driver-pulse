@@ -1,13 +1,22 @@
 # backend/trip_manager.py
 import uuid
+import os
 from simulator.sensor_simulator import SensorSimulator
-from backend.live_stress_engine import LiveStressEngine
+from datetime import datetime
+from backend.offline_queue import append_event
+import pandas as pd
+
+# Import LiveStressEngine from backend.live_stress_engine or fallback in api_server
+try:
+    from backend.live_stress_engine import LiveStressEngine
+except Exception:
+    LiveStressEngine = None
 
 class TripManager:
     def __init__(self, stress_model=None):
-        # ignore external stress_model param; instantiate engine which will load models from backend/models
         self.active_trips = {}
-        self.stress_engine = LiveStressEngine()
+        # stress_engine will be created by api_server (it passed model earlier)
+        self.stress_engine = LiveStressEngine(stress_model) if LiveStressEngine else None
 
     def start_trip(self, driver_id):
         trip_id = "TRIP_" + str(uuid.uuid4())[:6]
@@ -15,7 +24,7 @@ class TripManager:
         self.active_trips[trip_id] = {
             "driver_id": driver_id,
             "simulator": simulator,
-            "events": []
+            "events": []  # flagged events for this trip (in-memory)
         }
         return trip_id
 
@@ -23,50 +32,64 @@ class TripManager:
         if trip_id not in self.active_trips:
             raise KeyError(f"Unknown trip_id {trip_id}")
 
-        sim = self.active_trips[trip_id]["simulator"]
+        entry = self.active_trips[trip_id]
+        sim = entry["simulator"]
+
         motion = sim.generate_motion()
         audio = sim.generate_audio()
 
-        # engine expects dict-like inputs
-        stress = self.stress_engine.evaluate(motion, audio)
+        # make sure dict-like
+        m = motion if isinstance(motion, dict) else (motion.to_dict() if hasattr(motion, "to_dict") else dict(motion))
+        a = audio if isinstance(audio, dict) else (audio.to_dict() if hasattr(audio, "to_dict") else dict(audio))
 
-        # store flagged event in memory for this trip (useful if network down)
+        stress = self.stress_engine.evaluate(m, a) if self.stress_engine else {"stress":0.0,"flagged":False,"risk_score":0.0,"model_used":"none"}
+
+        # when flagged, append a normalized event and add to offline queue
         if stress.get("flagged", False):
-            self.active_trips[trip_id]["events"].append({
-                "timestamp": audio.get("timestamp"),
-                "elapsed_seconds": audio.get("elapsed_seconds"),
-                "type": audio.get("audio_classification"),
-                "db": audio.get("audio_level_db"),
-                "risk": stress.get("risk_score"),
-                "model_used": stress.get("model_used")
-            })
+            event = {
+                "trip_id": trip_id,
+                "driver_id": entry["driver_id"],
+                "timestamp": a.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                "type": a.get("audio_classification", "unknown"),
+                "db": float(a.get("audio_level_db", 0) or 0),
+                "risk_score": float(stress.get("risk_score", 0.0)),
+                "model_used": stress.get("model_used", "")
+            }
+            entry["events"].append(event)
+            # save to outputs/flagged_moments3.csv (append) and also to offline queue
+            try:
+                os.makedirs(os.path.join(os.path.dirname(__file__), "..", "outputs"), exist_ok=True)
+                csvp = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "outputs", "flagged_moments3.csv"))
+                df = pd.DataFrame([event])
+                if not os.path.exists(csvp):
+                    df.to_csv(csvp, index=False)
+                else:
+                    df.to_csv(csvp, mode="a", index=False, header=False)
+            except Exception as e:
+                print("Failed to persist flagged to CSV:", e)
+            try:
+                append_event(event)
+            except Exception:
+                pass
 
-        # convert numpy types to native
-        stress["stress"] = float(stress.get("stress", 0.0))
-        stress["risk_score"] = float(stress.get("risk_score", 0.0))
-        stress["audio_score"] = float(stress.get("audio_score", 0.0))
-        stress["motion_score"] = float(stress.get("motion_score", 0.0))
-
-        return motion, audio, stress
+        return m, a, stress
 
     def get_trip_data(self, trip_id):
+        if trip_id not in self.active_trips:
+            raise KeyError(f"Unknown trip_id {trip_id}")
         sim = self.active_trips[trip_id]["simulator"]
         return sim.get_dataframes()
 
     def end_trip(self, trip_id):
         if trip_id not in self.active_trips:
-            raise KeyError(f"Unknown trip_id {trip_id}")
-
+            print("Trip already ended:", trip_id)
+            return None, None, None, []
         trip = self.active_trips[trip_id]
         sim = trip["simulator"]
         driver_id = trip["driver_id"]
-
         accel, audio = sim.get_dataframes()
-
-        # collect events that were flagged during the trip (memory)
+        # collect events for this trip (in-memory)
         events = trip.get("events", [])
-
-        # remove active trip
+        # Remove active trip
         del self.active_trips[trip_id]
-
         return accel, audio, driver_id, events
