@@ -61,4 +61,4 @@ def compute_goal_probability(earnings_df, goals_df):
             "projected_final": round(projected_final,2),
             "prob_hit_goal": round(prob,3)
         })
-    return pd.DataFrame(results)
+    return pd.DataFrame(results) 

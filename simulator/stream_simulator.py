@@ -4,8 +4,8 @@ class StreamSimulator:
 
     def __init__(self):
 
-        self.accel = pd.read_csv("data/accelerometer.csv")
-        self.audio = pd.read_csv("data/audio.csv")
+        self.accel = pd.read_csv("data/accelerometer_new.csv")
+        self.audio = pd.read_csv("data/audio_full.csv")
 
         self.accel["timestamp"] = pd.to_datetime(self.accel["timestamp"])
         self.audio["timestamp"] = pd.to_datetime(self.audio["timestamp"])
