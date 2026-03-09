@@ -1,4 +1,6 @@
-# backend/live_stress_engine.py
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+
 import os
 import json
 import pickle
@@ -16,24 +18,26 @@ MODELS_DIR = os.path.join(os.path.dirname(__file__), "models")
 def _try_load(path):
     if not os.path.exists(path):
         return None
-    try:
-        # joblib for sklearn artifacts; fallback to pickle
-        if joblib and path.endswith(".pkl"):
+
+    # prefer joblib for sklearn artifacts
+    if joblib is not None:
+        try:
             return joblib.load(path)
-    except Exception:
-        pass
+        except Exception as e:
+            print("Joblib load failed:", e)
+
+    # fallback to pickle
     try:
         with open(path, "rb") as f:
             return pickle.load(f)
     except Exception as e:
-        print("Failed to load model", path, e)
-        return None
+        print("Pickle load failed:", e)
+
+    return None
 
 
 def _safe_float(x, default=0.0):
     try:
-        if x is None:
-            return default
         v = float(x)
         if math.isnan(v) or math.isinf(v):
             return default
@@ -48,45 +52,37 @@ def _build_feature_vector_from_keys(row, keys):
         if isinstance(row, dict):
             v = row.get(k, 0.0)
         else:
-            # pandas row or simple object
-            v = getattr(row, k, None) if hasattr(row, k) else (row.get(k, 0.0) if hasattr(row, "get") else 0.0)
-        vec.append(_safe_float(v, 0.0))
+            v = getattr(row, k, 0.0)
+        vec.append(_safe_float(v))
     return np.asarray(vec).reshape(1, -1)
 
 
 class LiveStressEngine:
     """
-    Loads models from backend/models (audio, motion, optional fusion).
-    evaluate(motion_row, audio_row) -> dict:
-      - stress: float 0..1
-      - flagged: bool
-      - risk_score: float 0..1
-      - model_used: "fusion"|"audio"|"motion"|"heuristic"|"avg"
-      - audio_score, motion_score
-    Configurable via model_manifest.json keys: "audio.features", "motion.features", "thresholds"
+    Uses audio_model.pkl and motion_model.pkl (if present).
+    Returns dict with keys: stress (0..1), flagged (bool), risk_score, model_used, audio_score, motion_score
     """
 
     def __init__(self, models_dir=None):
         self.models_dir = models_dir or MODELS_DIR
 
-        # default filenames
         self.audio_fp = os.path.join(self.models_dir, "audio_model.pkl")
         self.motion_fp = os.path.join(self.models_dir, "motion_model.pkl")
-        self.fusion_fp = os.path.join(self.models_dir, "fusion_model.pkl")
         self.manifest_fp = os.path.join(self.models_dir, "model_manifest.json")
 
-        # loaded objects
         self.audio_model = _try_load(self.audio_fp)
         self.motion_model = _try_load(self.motion_fp)
-        self.fusion_model = _try_load(self.fusion_fp)
 
-        # feature lists if provided
+        # features (can be overridden by manifest)
         self.audio_features = None
         self.motion_features = None
 
-        # thresholds
-        self.thresholds = {"fusion_flag": 0.85, "default_flag": 0.85}
+        # detection threshold and smoothing
+        self.flag_threshold = 0.45
+        self.alpha = 0.6  # smoothing weight for current value
+        self.previous_stress = 0.0
 
+        # read manifest if present
         if os.path.exists(self.manifest_fp):
             try:
                 with open(self.manifest_fp, "r") as f:
@@ -94,27 +90,37 @@ class LiveStressEngine:
                 self.audio_features = manifest.get("audio", {}).get("features")
                 self.motion_features = manifest.get("motion", {}).get("features")
                 if "thresholds" in manifest:
-                    self.thresholds.update(manifest.get("thresholds", {}))
+                    self.flag_threshold = manifest["thresholds"].get("default_flag", self.flag_threshold)
             except Exception as e:
                 print("Failed to read model manifest:", e)
 
         # fallback defaults
         if self.audio_features is None:
-            self.audio_features = ["audio_level_db", "sustained_duration_sec"]
+            self.audio_features = [
+                "audio_level_db",
+                "sustained_duration_sec",
+                "audio_db_delta",
+                "audio_variance",
+                "noise_spike",
+            ]
 
         if self.motion_features is None:
-            self.motion_features = ["speed_kmh", "speed_change_rate"]
+            self.motion_features = [
+                "speed_kmh",
+                "speed_change_rate",
+                "acceleration",
+                "brake_intensity",
+                "speed_variance",
+                "jerk",
+                "speed_delta",
+            ]
 
     def _score_from_model(self, model, X):
-        """
-        Try predict_proba then predict. Ensure 0..1 output; handle logits by sigmoid.
-        """
         if model is None:
             return None
         try:
             if hasattr(model, "predict_proba"):
                 p = model.predict_proba(X)
-                # take probability of positive class (last column)
                 if p.ndim == 2 and p.shape[1] >= 2:
                     val = float(p[0, -1])
                 else:
@@ -122,9 +128,7 @@ class LiveStressEngine:
             else:
                 pred = model.predict(X)
                 val = float(pred[0])
-            if math.isnan(val) or math.isinf(val):
-                return None
-            # clamp or squash
+            # squash logits to 0..1 if needed
             if val < 0 or val > 1:
                 try:
                     val = 1.0 / (1.0 + math.exp(-val))
@@ -152,60 +156,73 @@ class LiveStressEngine:
             return None
 
     def evaluate(self, motion, audio):
-        """
-        Evaluate one timestep. motion, audio are dict-like.
-        Returns serializable dict (no NaN, no numpy types).
-        """
-        # ensure plain dicts
+        # normalize inputs to plain dicts
         if hasattr(motion, "to_dict"):
             motion = motion.to_dict()
         if hasattr(audio, "to_dict"):
             audio = audio.to_dict()
 
+        # base numbers
         audio_db = _safe_float(audio.get("audio_level_db"), 0.0)
+        duration = _safe_float(audio.get("sustained_duration_sec"), 0.0)
+        speed = _safe_float(motion.get("speed_kmh"), 0.0)
+        speed_rate = _safe_float(motion.get("speed_change_rate"), 0.0)
+
+        # derived audio features (safe, simple)
+        audio["audio_db_delta"] = abs(audio_db - 60)
+        audio["audio_variance"] = audio_db * 0.05
+        audio["noise_spike"] = 1.0 if audio_db > 85 else 0.0
+
+        # derived motion features
+        motion["acceleration"] = speed_rate
+        motion["brake_intensity"] = abs(min(speed_rate, 0))
+        motion["speed_variance"] = speed * 0.1
+        motion["jerk"] = abs(speed_rate) * 0.5
+        motion["speed_delta"] = speed_rate
+
+        # compute model scores
         audio_score = self._compute_audio_score(audio) if self.audio_model is not None else None
         motion_score = self._compute_motion_score(motion) if self.motion_model is not None else None
 
-        # fusion
-        if self.fusion_model is not None and audio_score is not None and motion_score is not None:
-            try:
-                Xf = np.asarray([[audio_score, motion_score]])
-                fused = self._score_from_model(self.fusion_model, Xf)
-                if fused is not None:
-                    stress = float(fused)
-                    flagged = stress > float(self.thresholds.get("fusion_flag", 0.85))
-                    return {
-                        "stress": float(stress),
-                        "flagged": bool(flagged),
-                        "risk_score": float(stress),
-                        "model_used": "fusion",
-                        "audio_score": float(audio_score),
-                        "motion_score": float(motion_score)
-                    }
-            except Exception as e:
-                print("fusion model error:", e)
-
-        # fallback combine
+        # heuristic combination (audio heavier)
         if audio_score is not None and motion_score is not None:
-            stress = float(0.6 * audio_score + 0.4 * motion_score)
-            model_used = "avg_audio_motion"
+            raw_stress = 0.65 * float(audio_score) + 0.35 * float(motion_score)
+            model_used = "audio_motion_heuristic"
         elif audio_score is not None:
-            stress = float(audio_score)
-            model_used = "audio"
+            raw_stress = float(audio_score)
+            model_used = "audio_only"
         elif motion_score is not None:
-            stress = float(motion_score)
-            model_used = "motion"
+            raw_stress = float(motion_score)
+            model_used = "motion_only"
         else:
-            stress = max(0.0, min(1.0, audio_db / 100.0))
-            model_used = "heuristic"
+            raw_stress = min(audio_db / 100.0, 1.0)
+            model_used = "fallback"
 
-        flagged = bool(stress > float(self.thresholds.get("default_flag", 0.85)))
+        # smoothing
+        smoothed = self.alpha * raw_stress + (1.0 - self.alpha) * self.previous_stress
+        self.previous_stress = smoothed
+
+        # detection logic: allow either raw spike or smoothed value to trigger
+        flagged = (raw_stress > self.flag_threshold) or (smoothed > self.flag_threshold)
+
+        # clamp and return
+        stress_val = max(0.0, min(1.0, float(smoothed)))
+
+        # debug: helpful short log (safe to keep; remove if too verbose)
+        try:
+            print(
+                f"[LIVE_STRESS] raw={raw_stress:.4f} smoothed={smoothed:.4f} "
+                f"audio_score={audio_score} motion_score={motion_score} "
+                f"flagged={flagged} threshold={self.flag_threshold}"
+            )
+        except Exception:
+            pass
 
         return {
-            "stress": float(stress),
-            "flagged": flagged,
-            "risk_score": float(stress),
+            "stress": stress_val,
+            "flagged": bool(flagged),
+            "risk_score": stress_val,
             "model_used": model_used,
-            "audio_score": float(audio_score) if audio_score is not None else float(_safe_float(audio_db, 0.0)),
-            "motion_score": float(motion_score) if motion_score is not None else 0.0
+            "audio_score": float(audio_score) if audio_score is not None else 0.0,
+            "motion_score": float(motion_score) if motion_score is not None else 0.0,
         }

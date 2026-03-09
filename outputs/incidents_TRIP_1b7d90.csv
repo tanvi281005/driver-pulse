@@ -1,0 +1,2 @@
+trip_id,incident_id,start_time,end_time,duration_sec,peak_db,avg_risk,types,count
+TRIP_1b7d90,TRIP_1b7d90_INC_1,2026-03-09 11:18:12.922422,2026-03-09 11:18:23.927673,11.005251,97.74453925923625,0.36150283444765163,"argument,conversation,normal",11

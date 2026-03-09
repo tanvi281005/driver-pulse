@@ -14,6 +14,7 @@ from backend.trip_manager import TripManager
 from backend.earnings_predictor import EarningsPredictor
 from backend.offline_queue import read_all
 from backend.trip_storage import TripStorage
+from backend.shift_manager import ShiftManager
 
 app = FastAPI()
 trips_path = "data/trips.csv"
@@ -34,7 +35,7 @@ TRIPS_PATH = os.path.join(DATA_DIR, "trips.csv")
 EARNINGS_PATH = os.path.join(DATA_DIR, "earnings.csv")
 GOALS_PATH = os.path.join(DATA_DIR, "driver_goals.csv")
 DRIVERS_PATH = os.path.join(DATA_DIR, "drivers.csv")
-
+shift_manager = ShiftManager()
 # load drivers once (static)
 try:
     drivers = pd.read_csv(DRIVERS_PATH)
@@ -63,35 +64,58 @@ def login(req: LoginRequest):
 
 @app.get("/driver_trips/{driver_id}")
 def driver_trips(driver_id: str):
+
+    shift = shift_manager.get_active_shift(driver_id)
+
     try:
         trips_df = pd.read_csv(TRIPS_PATH)
     except Exception:
-        trips_df = pd.DataFrame()
-    driver_trips = trips_df[trips_df["driver_id"] == driver_id] if not trips_df.empty else pd.DataFrame()
+        return []
+    trips_df["start_datetime"] = pd.to_datetime(
+        trips_df["start_datetime"], errors="coerce"
+    )
+    driver_trips = trips_df[trips_df["driver_id"] == driver_id]
+
+    if shift is not None:
+
+        start = pd.to_datetime(shift["start_time"])
+
+        driver_trips = trips_df[trips_df["driver_id"] == driver_id]
+
+        driver_trips = driver_trips[driver_trips["start_datetime"] >= start]
+
     driver_trips = driver_trips.fillna(0)
+
     return driver_trips.to_dict(orient="records")
 
 @app.get("/earnings/{driver_id}")
 def driver_earnings(driver_id: str):
-    # Prefer trips.csv fare column, fallback to earnings.csv
+
+    shift = shift_manager.get_active_shift(driver_id)
+
     try:
         trips_df = pd.read_csv(TRIPS_PATH)
     except Exception:
-        trips_df = pd.DataFrame()
-    records = []
-    if not trips_df.empty and "fare" in trips_df.columns:
-        dd = trips_df[trips_df["driver_id"] == driver_id][["trip_id", "fare"]].fillna(0)
-        records = dd.to_dict(orient="records")
-    else:
-        try:
-            earnings_df = pd.read_csv(EARNINGS_PATH)
-        except Exception:
-            earnings_df = pd.DataFrame()
-        col = "fare" if "fare" in earnings_df.columns else ("earnings" if "earnings" in earnings_df.columns else None)
-        if col:
-            dd = earnings_df[earnings_df["driver_id"] == driver_id][["trip_id", col]].rename(columns={col: "fare"}).fillna(0)
-            records = dd.to_dict(orient="records")
-    return records
+        return []
+
+    if trips_df.empty or "fare" not in trips_df.columns:
+        return []
+
+    trips_df["start_datetime"] = pd.to_datetime(
+        trips_df["start_datetime"], errors="coerce"
+    )
+
+    driver_trips = trips_df[trips_df["driver_id"] == driver_id]
+
+    if shift is not None:
+        start = pd.to_datetime(shift["start_time"])
+        driver_trips = driver_trips[
+            driver_trips["start_datetime"] >= start
+        ]
+
+    dd = driver_trips[["trip_id", "fare"]].fillna(0)
+
+    return dd.to_dict(orient="records")
 
 @app.get("/flagged_events/{driver_id}")
 def flagged_events(driver_id: str):
@@ -276,14 +300,47 @@ def end_trip(trip_id: str, req: EndTripRequest):
 
 @app.get("/driver_today_stats/{driver_id}")
 def today_stats(driver_id: str):
-    today_earnings = earnings_predictor.total_today(driver_id)
-    predicted = earnings_predictor.predict_end_shift(driver_id)
-    prob = earnings_predictor.goal_probability(driver_id)
+
+    shift = shift_manager.get_active_shift(driver_id)
+
+    if shift is None:
+        return {
+            "today_earnings": 0,
+            "predicted_end": 0,
+            "goal_probability": 0
+        }
+
+    start = pd.to_datetime(shift["start_time"])
+
+    try:
+        trips_df = pd.read_csv(TRIPS_PATH)
+    except Exception:
+        trips_df = pd.DataFrame()
+
+    if trips_df.empty:
+        return {
+            "today_earnings": 0,
+            "predicted_end": 0,
+            "goal_probability": 0
+        }
+
+    trips_df["start_datetime"] = pd.to_datetime(trips_df["start_datetime"], errors="coerce")
+
+    driver_trips = trips_df[
+        (trips_df["driver_id"] == driver_id) &
+        (trips_df["start_datetime"] >= start)
+    ]
+
+    today_earnings = driver_trips["fare"].fillna(0).sum()
+
+    predicted = today_earnings + driver_trips["fare"].mean() * 3 if len(driver_trips) > 0 else today_earnings
+
+    goal_prob = earnings_predictor.goal_probability(driver_id)
 
     return {
-        "today_earnings": round(float(today_earnings), 2),
-        "predicted_end": round(float(predicted), 2),
-        "goal_probability": float(prob)
+        "today_earnings": float(today_earnings),
+        "predicted_end": float(predicted),
+        "goal_probability": float(goal_prob)
     }
 
 @app.get("/driver_goal/{driver_id}")
@@ -303,3 +360,31 @@ def live_events(driver_id: str):
     all_events = queued + inmem
     # limit to last 200
     return all_events[-200:]
+
+@app.post("/start_shift/{driver_id}")
+def start_shift(driver_id: str):
+
+    shift_id = shift_manager.start_shift(driver_id)
+
+    return {"shift_id": shift_id}
+
+@app.post("/end_shift/{driver_id}")
+def end_shift(driver_id: str):
+
+    shift_id = shift_manager.end_shift(driver_id)
+
+    return {"ended_shift": shift_id}
+
+@app.get("/shift_status/{driver_id}")
+def shift_status(driver_id: str):
+
+    shift = shift_manager.get_active_shift(driver_id)
+
+    if shift is None:
+        return {"active": False}
+
+    return {
+        "active": True,
+        "start_time": shift["start_time"],
+        "shift_id": shift["shift_id"]
+    }

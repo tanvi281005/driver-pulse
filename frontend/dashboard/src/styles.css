@@ -1,0 +1,61 @@
+body{
+  margin:0;
+  background:#071024;
+  color:#e6eef8;
+  font-family:Inter,system-ui;
+}
+
+.dashboard-root{
+  padding:20px;
+}
+
+.topbar{
+  display:flex;
+  justify-content:space-between;
+  margin-bottom:20px;
+}
+
+.btn{
+  padding:8px 14px;
+  background:#1e293b;
+  border:none;
+  color:white;
+  border-radius:6px;
+}
+
+.cards-row{
+  display:flex;
+  gap:16px;
+}
+
+.card{
+  background:#0f1724;
+  padding:18px;
+  border-radius:10px;
+}
+
+.bottom-row{
+  margin-top:20px;
+  display:flex;
+  gap:12px;
+}
+
+.sidebar{
+  position:fixed;
+  right:-400px;
+  top:0;
+  width:360px;
+  height:100%;
+  background:#0f1724;
+  padding:20px;
+  transition:0.25s;
+}
+
+.sidebar.open{
+  right:0;
+}
+
+.risk.safe{
+  color:#22c55e;
+  font-size:26px;
+}

@@ -1,4 +1,3 @@
-# backend/trip_manager.py
 import uuid
 import os
 from simulator.sensor_simulator import SensorSimulator
@@ -12,10 +11,12 @@ try:
 except Exception:
     LiveStressEngine = None
 
+
 class TripManager:
     def __init__(self, stress_model=None):
         self.active_trips = {}
         # stress_engine will be created by api_server (it passed model earlier)
+        # stress_model argument is treated as models_dir (optional)
         self.stress_engine = LiveStressEngine(stress_model) if LiveStressEngine else None
 
     def start_trip(self, driver_id):
@@ -42,10 +43,15 @@ class TripManager:
         m = motion if isinstance(motion, dict) else (motion.to_dict() if hasattr(motion, "to_dict") else dict(motion))
         a = audio if isinstance(audio, dict) else (audio.to_dict() if hasattr(audio, "to_dict") else dict(audio))
 
-        stress = self.stress_engine.evaluate(m, a) if self.stress_engine else {"stress":0.0,"flagged":False,"risk_score":0.0,"model_used":"none"}
+        stress = self.stress_engine.evaluate(m, a) if self.stress_engine else {"stress": 0.0, "flagged": False, "risk_score": 0.0, "model_used": "none"}
 
         # when flagged, append a normalized event and add to offline queue
-        if stress.get("flagged", False):
+        try:
+            is_flagged = bool(stress.get("flagged", False))
+        except Exception:
+            is_flagged = False
+
+        if is_flagged:
             event = {
                 "trip_id": trip_id,
                 "driver_id": entry["driver_id"],
@@ -56,6 +62,13 @@ class TripManager:
                 "model_used": stress.get("model_used", "")
             }
             entry["events"].append(event)
+
+            # DEBUG log so you can see server-side when an event is detected
+            try:
+                print(f"[TRIP_MANAGER] EVENT DETECTED for {trip_id}: {event}")
+            except Exception:
+                pass
+
             # save to outputs/flagged_moments3.csv (append) and also to offline queue
             try:
                 os.makedirs(os.path.join(os.path.dirname(__file__), "..", "outputs"), exist_ok=True)
@@ -69,8 +82,12 @@ class TripManager:
                 print("Failed to persist flagged to CSV:", e)
             try:
                 append_event(event)
-            except Exception:
-                pass
+                try:
+                    print(f"[TRIP_MANAGER] appended to offline queue for {trip_id}")
+                except Exception:
+                    pass
+            except Exception as e:
+                print("append_event failed:", e)
 
         return m, a, stress
 

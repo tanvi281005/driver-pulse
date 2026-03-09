@@ -1,12 +1,22 @@
 # backend/earnings_predictor.py
 import pandas as pd
 from datetime import datetime, time
-
+import joblib
+import os
+import math
 class EarningsPredictor:
     def __init__(self, goals_path="data/driver_goals.csv", trips_path="data/trips.csv", drivers_path="data/drivers.csv"):
+
         self.goals_path = goals_path
         self.trips_path = trips_path
         self.drivers_path = drivers_path
+
+        model_path = os.path.join(os.path.dirname(__file__), "models", "driver_goal_prediction_model.pkl")
+
+        try:
+            self.goal_model = joblib.load(model_path)
+        except:
+            self.goal_model = None
 
     def _load_trips(self):
         try:
@@ -58,19 +68,60 @@ class EarningsPredictor:
         goals = self._load_goals()
         if goals.empty or "driver_id" not in goals.columns:
             return 0.0
+
         row = goals[goals["driver_id"] == driver_id]
         if len(row) == 0:
             return 0.0
-        if "target_earnings" in row.columns:
-            target = float(row.iloc[0]["target_earnings"])
-        elif "target" in row.columns:
-            target = float(row.iloc[0]["target"])
-        else:
-            return 0.0
-        predicted = self.predict_end_shift(driver_id)
+
+        target = float(row.iloc[0].get("target_earnings", row.iloc[0].get("target", 0)))
         if target <= 0:
             return 0.0
-        return min(predicted / target, 1.0)
+
+        today = self.total_today(driver_id)
+        predicted = self.predict_end_shift(driver_id)
+
+    # if absolutely nothing predicted and nothing earned yet -> 0%
+        if today == 0 and predicted == 0:
+            return 0.0
+
+    # simple deterministic ratio fallback
+        ratio = float(predicted) / float(target) if target > 0 else 0.0
+        ratio = max(0.0, min(1.0, ratio))
+
+    # use model only when we have some history (avoid spurious ML outputs)
+        try:
+            all_trips = self._load_trips()
+            hist = all_trips[all_trips["driver_id"] == driver_id]
+            if self.goal_model is None or len(hist) < 3:
+                return ratio
+        except Exception:
+        # if anything goes wrong reading history, fall back to ratio
+            return ratio
+
+    # try the model but validate output; fallback to ratio on any issue
+        try:
+            X = [[today, predicted, target]]
+            prob = None
+            if hasattr(self.goal_model, "predict_proba"):
+                prob = float(self.goal_model.predict_proba(X)[0][1])
+            else:
+            # if model only provides predict, map to 0..1 safely
+                p = float(self.goal_model.predict(X)[0])
+            # if value is clearly a 0..1 probability, accept it; otherwise squash with sigmoid
+                if 0.0 <= p <= 1.0:
+                    prob = p
+                else:
+                    prob = 1.0 / (1.0 + math.exp(-p))
+        # sanitize
+            if math.isnan(prob) or math.isinf(prob):
+                return ratio
+            prob = max(0.0, min(1.0, prob))
+            prob = max(prob, today / target if target > 0 else 0)
+            prob = min(prob, 1.0)
+            return round(prob, 3)
+        except Exception:
+            return ratio
+    
 
     def goal_target_and_progress(self, driver_id):
         # convenience: returns target and current_progress (0..1)
