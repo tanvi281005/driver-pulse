@@ -36,94 +36,85 @@ class EarningsPredictor:
         except Exception:
             return pd.DataFrame()
 
-    def total_today(self, driver_id):
+    def earnings_since(self, driver_id, start_time=None):
+
         df = self._load_trips()
+
         if df.empty or "start_datetime" not in df.columns:
             return 0.0
+
         df["start_datetime"] = pd.to_datetime(df["start_datetime"], errors="coerce")
-        today = datetime.now().date()
-        driver_df = df[(df["driver_id"] == driver_id) & (df["start_datetime"].dt.date == today)]
+
+        driver_df = df[df["driver_id"] == driver_id]
+
+        if start_time is not None:
+            start_time = pd.to_datetime(start_time)
+            driver_df = driver_df[driver_df["start_datetime"] >= start_time]
+        else:
+            today = datetime.now().date()
+            driver_df = driver_df[driver_df["start_datetime"].dt.date == today]
+
         fare_col = "fare" if "fare" in df.columns else ("earnings" if "earnings" in df.columns else None)
+
         if fare_col is None:
             return 0.0
+
         return float(driver_df[fare_col].fillna(0).sum())
 
-    def predict_end_shift(self, driver_id, remaining_trips_hint=5):
+    def predict_end_shift(self, driver_id, start_time=None, remaining_trips_hint=5):
+
         df = self._load_trips()
-        fare_col = "fare" if "fare" in df.columns else ("earnings" if "earnings" in df.columns else None)
-        if fare_col is None:
+
+        fare_col = "fare" if "fare" in df.columns else "earnings"
+
+        if fare_col not in df.columns:
             return 0.0
-        today_sum = df[(df["driver_id"] == driver_id) & (pd.to_datetime(df["start_datetime"], errors="coerce").dt.date == datetime.now().date())][fare_col].fillna(0).sum()
+
+        today_sum = self.earnings_since(driver_id, start_time)
+
         hist = df[df["driver_id"] == driver_id]
+
         if len(hist) == 0:
             return float(today_sum)
+
         avg = hist[fare_col].dropna()
+
         if len(avg) == 0:
             return float(today_sum)
+
         avg_val = float(avg.mean())
+
         predicted = float(today_sum) + avg_val * remaining_trips_hint
+
         return predicted
 
-    def goal_probability(self, driver_id):
+    def goal_probability(self, driver_id, start_time=None):
+
         goals = self._load_goals()
+
         if goals.empty or "driver_id" not in goals.columns:
             return 0.0
 
         row = goals[goals["driver_id"] == driver_id]
+
         if len(row) == 0:
             return 0.0
 
         target = float(row.iloc[0].get("target_earnings", row.iloc[0].get("target", 0)))
+
+        today = self.earnings_since(driver_id, start_time)
+
+        predicted = self.predict_end_shift(driver_id, start_time)
+
         if target <= 0:
             return 0.0
 
-        today = self.total_today(driver_id)
-        predicted = self.predict_end_shift(driver_id)
+        ratio = predicted / target
 
-    # if absolutely nothing predicted and nothing earned yet -> 0%
-        if today == 0 and predicted == 0:
-            return 0.0
-
-    # simple deterministic ratio fallback
-        ratio = float(predicted) / float(target) if target > 0 else 0.0
-        ratio = max(0.0, min(1.0, ratio))
-
-    # use model only when we have some history (avoid spurious ML outputs)
-        try:
-            all_trips = self._load_trips()
-            hist = all_trips[all_trips["driver_id"] == driver_id]
-            if self.goal_model is None or len(hist) < 3:
-                return ratio
-        except Exception:
-        # if anything goes wrong reading history, fall back to ratio
-            return ratio
-
-    # try the model but validate output; fallback to ratio on any issue
-        try:
-            X = [[today, predicted, target]]
-            prob = None
-            if hasattr(self.goal_model, "predict_proba"):
-                prob = float(self.goal_model.predict_proba(X)[0][1])
-            else:
-            # if model only provides predict, map to 0..1 safely
-                p = float(self.goal_model.predict(X)[0])
-            # if value is clearly a 0..1 probability, accept it; otherwise squash with sigmoid
-                if 0.0 <= p <= 1.0:
-                    prob = p
-                else:
-                    prob = 1.0 / (1.0 + math.exp(-p))
-        # sanitize
-            if math.isnan(prob) or math.isinf(prob):
-                return ratio
-            prob = max(0.0, min(1.0, prob))
-            prob = max(prob, today / target if target > 0 else 0)
-            prob = min(prob, 1.0)
-            return round(prob, 3)
-        except Exception:
-            return ratio
+        return max(0.0, min(ratio, 1.0))
     
 
-    def goal_target_and_progress(self, driver_id):
+    def goal_target_and_progress(self, driver_id, start_time=None):
         # convenience: returns target and current_progress (0..1)
         goals = self._load_goals()
         if goals.empty or "driver_id" not in goals.columns:
@@ -137,6 +128,11 @@ class EarningsPredictor:
             target = float(row.iloc[0]["target"])
         else:
             target = 0.0
-        today = self.total_today(driver_id)
-        progress = float(today / target) if target > 0 else 0.0
-        return {"target": target, "progress": min(progress, 1.0)}
+        earnings = self.earnings_since(driver_id, start_time)
+
+        progress = earnings / target if target > 0 else 0.0
+
+        return {
+        "target": target,
+        "progress": min(progress, 1.0)
+        }
