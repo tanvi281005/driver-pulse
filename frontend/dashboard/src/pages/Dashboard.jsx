@@ -190,7 +190,7 @@ export default function Dashboard({ driver }) {
   // ----------------------------
   const loadShiftStatus = async () => {
     try{
-      const res = await axios.get(`http://localhost:8000/shift_status/${driver.driver_id}`)
+      const res = await axios.get(`https://driver-pulse.onrender.com/shift_status/${driver.driver_id}`)
       setShiftActive(res.data.active)
       if(res.data.active){
         // load shift-scoped data
@@ -206,7 +206,7 @@ export default function Dashboard({ driver }) {
 
   const loadTrips = async () => {
     try{
-      const res = await axios.get(`http://localhost:8000/driver_trips/${driver.driver_id}`)
+      const res = await axios.get(`https://driver-pulse.onrender.com/driver_trips/${driver.driver_id}`)
       setTrips(res.data || [])
     }catch(e){
       console.error("loadTrips err", e)
@@ -215,7 +215,7 @@ export default function Dashboard({ driver }) {
 
   const loadEarnings = async () => {
     try{
-      const res = await axios.get(`http://localhost:8000/earnings/${driver.driver_id}`)
+      const res = await axios.get(`https://driver-pulse.onrender.com/earnings/${driver.driver_id}`)
       setEarnings(res.data || [])
     }catch(e){
       console.error("loadEarnings err", e)
@@ -224,7 +224,7 @@ export default function Dashboard({ driver }) {
 
   const loadStats = async () => {
     try{
-      const res = await axios.get(`http://localhost:8000/driver_today_stats/${driver.driver_id}`)
+      const res = await axios.get(`https://driver-pulse.onrender.com/driver_today_stats/${driver.driver_id}`)
       setTodayStats(res.data)
     }catch(e){
       console.error("loadStats err", e)
@@ -233,7 +233,7 @@ export default function Dashboard({ driver }) {
 
   const loadGoal = async () => {
     try{
-      const res = await axios.get(`http://localhost:8000/driver_goal/${driver.driver_id}`)
+      const res = await axios.get(`https://driver-pulse.onrender.com/driver_goal/${driver.driver_id}`)
       setGoalTarget(res.data.target || 0)
       setGoalProgress(res.data.progress || 0)
     }catch(e){
@@ -243,7 +243,7 @@ export default function Dashboard({ driver }) {
 
   const loadLiveEvents = async () => {
     try{
-      const res = await axios.get(`http://localhost:8000/live_events/${driver.driver_id}`)
+      const res = await axios.get(`https://driver-pulse.onrender.com/live_events/${driver.driver_id}`)
       setLiveEvents(res.data || [])
     }catch(e){
       console.error("loadLiveEvents err", e)
@@ -253,7 +253,7 @@ export default function Dashboard({ driver }) {
   // --- New: load past trip summaries
   const loadPastTrips = async () => {
     try{
-      const res = await axios.get(`http://localhost:8000/past_trip_summaries/${driver.driver_id}`)
+      const res = await axios.get(`https://driver-pulse.onrender.com/past_trip_summaries/${driver.driver_id}`)
       // server returns [] or list of merged trip summaries
       setPastTripsList(res.data || [])
       // if a trip is currently selected, attempt to refresh its data to keep details up-to-date
@@ -271,7 +271,7 @@ export default function Dashboard({ driver }) {
   // ----------------------------
   const startShift = async () => {
     try{
-      await axios.post(`http://localhost:8000/start_shift/${driver.driver_id}`)
+      await axios.post(`https://driver-pulse.onrender.com/start_shift/${driver.driver_id}`)
       setShiftActive(true)
       await Promise.all([loadTrips(), loadEarnings(), loadStats(), loadGoal(), loadLiveEvents(), loadPastTrips()])
     }catch(e){
@@ -281,7 +281,7 @@ export default function Dashboard({ driver }) {
 
   const endShift = async () => {
     try{
-      await axios.post(`http://localhost:8000/end_shift/${driver.driver_id}`)
+      await axios.post(`https://driver-pulse.onrender.com/end_shift/${driver.driver_id}`)
       setShiftActive(false)
       setTrips([])
       setEarnings([])
@@ -299,7 +299,7 @@ export default function Dashboard({ driver }) {
       return
     }
     try{
-      const res = await axios.post(`http://localhost:8000/start_trip/${driver.driver_id}`)
+      const res = await axios.post(`https://driver-pulse.onrender.com/start_trip/${driver.driver_id}`)
       const tripId = res.data.trip_id
       setStressData([])
       setLiveEvents([])
@@ -315,7 +315,7 @@ export default function Dashboard({ driver }) {
     if(intervalRef.current) return
     intervalRef.current = setInterval(async () => {
       try{
-        const res = await axios.get(`http://localhost:8000/trip_step/${tripId}`)
+        const res = await axios.get(`https://driver-pulse.onrender.com/trip_step/${tripId}`)
         const audio = res.data.audio || {}
         const stress = res.data.stress || {}
         const stressValue = Number(stress.stress || 0)
@@ -397,7 +397,7 @@ await new Promise((resolve) => {
   )
 })
     try{
-      await axios.post(`http://localhost:8000/end_trip/${activeTrip}`, { earnings: parseFloat(earningsInput || 0) })
+      await axios.post(`https://driver-pulse.onrender.com/end_trip/${activeTrip}`, { earnings: parseFloat(earningsInput || 0) })
     }catch(e){
       console.error("endTrip err", e)
     }

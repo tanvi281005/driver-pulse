@@ -33,7 +33,7 @@ function LoginPage() {
 
     try {
 
-      const res = await axios.post("http://localhost:8000/login", {
+      const res = await axios.post("https://driver-pulse.onrender.com/login", {
         driver_id: driverId
       })
 
