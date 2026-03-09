@@ -76,16 +76,19 @@ class AnalyticsRunner:
 
         # build trip_summary row
         trip_summary = pd.DataFrame([{
-            "trip_id": trip_id if trip_id is not None else (flagged_df["trip_id"].iloc[0] if not flagged_df.empty else ""),
-            "start_datetime": start_dt.strftime("%Y-%m-%d %H:%M:%S") if start_dt is not None else "",
-            "end_datetime": end_dt.strftime("%Y-%m-%d %H:%M:%S") if end_dt is not None else "",
-            "duration_min": round(duration_min, 2),
-            "distance_km": round(distance_km, 3),
-            "avg_risk": round(avg_risk, 3),
-            "incidents": len(incidents),
-            "safety_score": round(safety_score, 3),
-            "fatigue_prob": round(fatigue_prob, 3)
-        }])
+    "trip_id": trip_id,
+    "driver_id": flagged_df["driver_id"].iloc[0] if not flagged_df.empty else "",
+    "start_datetime": start_dt.strftime("%Y-%m-%d %H:%M:%S") if start_dt is not None else "",
+    "end_datetime": end_dt.strftime("%Y-%m-%d %H:%M:%S") if end_dt is not None else "",
+    "duration_min": round(duration_min,2),
+    "distance_km": round(distance_km,3),
+
+    "flagged_moments_count": len(flagged_df),
+    "max_severity": round(flagged_df["risk_score"].max(),2) if not flagged_df.empty else 0,
+    "stress_score": round(avg_risk,3),
+
+    "trip_quality_rating": round((1-safety_score)*5,2)
+}])
 
         result = {
             "trip_summary": trip_summary,

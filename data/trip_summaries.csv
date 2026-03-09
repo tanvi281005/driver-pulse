@@ -1,0 +1,2 @@
+trip_id,driver_id,flagged_moments_count,max_severity,stress_score,trip_quality_rating,start_time,end_time,duration_min,distance_km,fare,start_datetime,end_datetime,avg_risk,incidents,safety_score,fatigue_prob
+TRIP_782ad3,DRV001,6,,,,2026-03-09 14:32,2026-03-09 14:32,0.3,0.205,120.0,2026-03-09 14:32:27,2026-03-09 14:32:45,0.4,2.0,0.4,0.2

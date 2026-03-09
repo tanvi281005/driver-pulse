@@ -15,6 +15,8 @@ import {
   RadialBar, 
   RadialBarChart
 } from "recharts"
+import { ToastContainer, toast } from "react-toastify"
+import "react-toastify/dist/ReactToastify.css"
 
 // Needle uses same math as before
 function Needle({ value, cx, cy, radius }) {
@@ -109,6 +111,11 @@ export default function Dashboard({ driver }) {
 
   const intervalRef = useRef(null)
 
+  // --- New: past trips panel state
+  const [pastTripsList, setPastTripsList] = useState([]) // array of trip summaries from backend
+  const [selectedPastTrip, setSelectedPastTrip] = useState(null)
+  const [showPastPanel, setShowPastPanel] = useState(false)
+
   // UI palette
   const palette = {
     bg: "#071124",
@@ -149,6 +156,12 @@ export default function Dashboard({ driver }) {
     return () => clearInterval(id)
   }, [latestStress])
 
+  useEffect(()=>{
+  if(latestStress > 0.75){
+    toast.warning("⚠ Driver fatigue detected")
+  }
+},[latestStress])
+
   // compute cumulative earnings series for chart
   const earningsSeries = useMemo(() => {
     if(!earnings || earnings.length === 0) return []
@@ -181,7 +194,10 @@ export default function Dashboard({ driver }) {
       setShiftActive(res.data.active)
       if(res.data.active){
         // load shift-scoped data
-        await Promise.all([loadTrips(), loadEarnings(), loadStats(), loadGoal(), loadLiveEvents()])
+        await Promise.all([loadTrips(), loadEarnings(), loadStats(), loadGoal(), loadLiveEvents(), loadPastTrips()])
+      } else {
+        // still load past trips when shift inactive so the side panel can show history
+        await loadPastTrips()
       }
     }catch(e){
       console.error("shift status load failed", e)
@@ -234,6 +250,22 @@ export default function Dashboard({ driver }) {
     }
   }
 
+  // --- New: load past trip summaries
+  const loadPastTrips = async () => {
+    try{
+      const res = await axios.get(`http://localhost:8000/past_trip_summaries/${driver.driver_id}`)
+      // server returns [] or list of merged trip summaries
+      setPastTripsList(res.data || [])
+      // if a trip is currently selected, attempt to refresh its data to keep details up-to-date
+      if(selectedPastTrip){
+        const updated = (res.data || []).find(t => t.trip_id === selectedPastTrip.trip_id)
+        if(updated) setSelectedPastTrip(updated)
+      }
+    }catch(e){
+      console.error("loadPastTrips err", e)
+    }
+  }
+
   // ----------------------------
   // Actions (shift/trip)
   // ----------------------------
@@ -241,7 +273,7 @@ export default function Dashboard({ driver }) {
     try{
       await axios.post(`http://localhost:8000/start_shift/${driver.driver_id}`)
       setShiftActive(true)
-      await Promise.all([loadTrips(), loadEarnings(), loadStats(), loadGoal(), loadLiveEvents()])
+      await Promise.all([loadTrips(), loadEarnings(), loadStats(), loadGoal(), loadLiveEvents(), loadPastTrips()])
     }catch(e){
       console.error("startShift", e)
     }
@@ -263,7 +295,7 @@ export default function Dashboard({ driver }) {
 
   const startTrip = async () => {
     if(!shiftActive){
-      alert("Start shift first")
+      toast.warning("Start shift first")
       return
     }
     try{
@@ -326,7 +358,44 @@ export default function Dashboard({ driver }) {
       clearInterval(intervalRef.current)
       intervalRef.current = null
     }
-    const earningsInput = prompt("Enter trip earnings")
+    let earningsInput = 0
+
+await new Promise((resolve) => {
+  toast(
+    ({ closeToast }) => (
+      <div>
+        <div style={{marginBottom:8}}>Enter trip earnings</div>
+        <input
+          type="number"
+          onChange={(e)=> earningsInput = e.target.value}
+          style={{
+            width:"100%",
+            padding:6,
+            marginBottom:8,
+            borderRadius:6,
+            border:"none"
+          }}
+        />
+        <button
+          onClick={()=>{ 
+            closeToast()
+            resolve()
+          }}
+          style={{
+            background:"#22c55e",
+            padding:"6px 10px",
+            border:"none",
+            borderRadius:6,
+            fontWeight:700
+          }}
+        >
+          Submit
+        </button>
+      </div>
+    ),
+    { autoClose:false }
+  )
+})
     try{
       await axios.post(`http://localhost:8000/end_trip/${activeTrip}`, { earnings: parseFloat(earningsInput || 0) })
     }catch(e){
@@ -335,8 +404,8 @@ export default function Dashboard({ driver }) {
     setTripRunning(false)
     setActiveTrip(null)
     // refresh
-    await Promise.all([loadTrips(), loadEarnings(), loadStats(), loadGoal(), loadLiveEvents()])
-    alert("Trip completed")
+    await Promise.all([loadTrips(), loadEarnings(), loadStats(), loadGoal(), loadLiveEvents(), loadPastTrips()])
+    toast.warning("Trip completed")
   }
 
   // logout handler (non-destructive: clears common token key and navigates to /login)
@@ -370,12 +439,18 @@ export default function Dashboard({ driver }) {
     return grid
   })()
 
+  const formatDateTime = (s) => {
+    if(!s) return ""
+    // the backend already provides "YYYY-MM-DD HH:MM" strings for start_time / end_time
+    return s
+  }
+
   // ----------------------------
   // Render
   // ----------------------------
   return (
     <div style={{padding:28, background: palette.bg, minHeight:"100vh", color:palette.text, fontFamily: "Inter, Roboto, system-ui"}}>
-
+      <ToastContainer position="top-right" autoClose={3000} theme="dark" />
       <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:18}}>
         <div>
           <h2 style={{color: palette.text, margin:0}}>Welcome {driver.name}</h2>
@@ -383,6 +458,23 @@ export default function Dashboard({ driver }) {
         </div>
 
         <div style={{display:"flex", gap:12, alignItems:"center"}}>
+          {/* Past trips panel toggle (non-invasive) */}
+          <button
+            onClick={() => setShowPastPanel(s => !s)}
+            style={{
+              padding:"8px 10px",
+              background: showPastPanel ? "#1e293b" : "transparent",
+              border: "1px solid rgba(255,255,255,0.06)",
+              color: palette.text,
+              borderRadius:8,
+              cursor: "pointer",
+              fontWeight:700
+            }}
+            title="Show past trips"
+          >
+            Past Trips
+          </button>
+
           {/* Logout button (non-invasive) */}
           <button
             onClick={handleLogout}
@@ -593,7 +685,7 @@ export default function Dashboard({ driver }) {
                 <div key={i} style={{display:"flex", justifyContent:"space-between", gap:12, alignItems:"center", padding:10, borderRadius:8, background:"rgba(255,255,255,0.01)"}}>
                   <div>
                     <div style={{fontWeight:800}}>{e.type} — {e.db} dB</div>
-                    <div style={{fontSize:12, color:"#9ca3af"}}>{time} • model {e.model_used}</div>
+                    <div style={{fontSize:12, color:"#9ca3af"}}>{time}</div>
                   </div>
                   <div style={{display:"flex", flexDirection:"column", alignItems:"flex-end"}}>
                     <div style={{background: badge.bg, color: badge.txt, padding:"6px 10px", borderRadius:8, fontWeight:800}}>{Math.round((risk||0)*100)}%</div>
@@ -678,6 +770,155 @@ export default function Dashboard({ driver }) {
         </div>
 
       </div>
+
+      {/* Past trips side panel (overlay, non-invasive) */}
+      {showPastPanel && (
+        <div
+          style={{
+            position: "fixed",
+            right: 20,
+            top: 80,
+            width: 600,
+            maxHeight: "95vh",
+            zIndex: 1200,
+            ...cardStyle(palette.card),
+            padding: 12,
+            overflow: "hidden",
+            boxShadow: "0 20px 50px rgba(0,0,0,0.6)",
+            borderRadius: 12
+          }}
+        >
+          <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8}}>
+            <div style={{fontWeight:800}}>Past Trips</div>
+            <div style={{display:"flex", gap:8, alignItems:"center"}}>
+              <div style={{fontSize:12, color:"#9ca3af"}}>{pastTripsList.length} trips</div>
+              <button onClick={() => { setShowPastPanel(false); setSelectedPastTrip(null)}} style={{background:"transparent", border:"none", color:"#9ca3af", cursor:"pointer"}}>Close</button>
+            </div>
+          </div>
+
+          <div style={{display:"flex", gap:10, height:"calc(78vh - 140px)"}}>
+            {/* list */}
+            <div style={{width:160, overflowY:"auto", paddingRight:6, borderRight:"1px solid rgba(255,255,255,0.03)"}}>
+              {pastTripsList.length === 0 && <div style={{opacity:0.6}}>No past trips available</div>}
+              {pastTripsList.map((t, i) => {
+                const isSelected = selectedPastTrip && selectedPastTrip.trip_id === t.trip_id
+                return (
+                  <div
+                    key={t.trip_id || i}
+                    onClick={() => setSelectedPastTrip(t)}
+                    style={{
+                      padding:8,
+                      borderRadius:8,
+                      cursor:"pointer",
+                      marginBottom:8,
+                      background: isSelected ? "linear-gradient(90deg,#0b1220,#102230)" : "transparent",
+                      border: isSelected ? "1px solid rgba(255,255,255,0.04)" : "none"
+                    }}
+                  >
+                    <div style={{fontWeight:800, fontSize:13}}>{t.trip_id}</div>
+                    <div style={{fontSize:11, color:"#9ca3af", marginTop:6}}>{formatDateTime(t.start_time || t.start_time)}</div>
+                    <div style={{fontSize:12, color:"#cbd5e1", marginTop:6}}>{fmtRupee(t.fare || t.fare)}</div>
+                  </div>
+                )
+              })}
+            </div>
+
+            {/* detail */}
+            <div style={{flex:1, overflowY:"auto", paddingLeft:8}}>
+              {!selectedPastTrip && <div style={{opacity:0.6}}>Select a trip to view summary</div>}
+              {selectedPastTrip && (
+                <div>
+                  <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8}}>
+                    <div>
+                      <div style={{fontWeight:900}}>{selectedPastTrip.trip_id}</div>
+                      <div style={{fontSize:12, color:"#9ca3af"}}>{formatDateTime(selectedPastTrip.start_time)} → {formatDateTime(selectedPastTrip.end_time)}</div>
+                    </div>
+                    <div style={{fontWeight:800}}>{fmtRupee(selectedPastTrip.fare)}</div>
+                  </div>
+
+                  <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:10}}>
+                    <div style={{background:"rgba(255,255,255,0.02)", padding:8, borderRadius:8}}>
+                      <div style={{fontSize:12, color:"#9ca3af"}}>Duration</div>
+                      <div style={{fontWeight:800}}>{selectedPastTrip.duration_min ? `${selectedPastTrip.duration_min} min` : "-"}</div>
+                    </div>
+                    <div style={{background:"rgba(255,255,255,0.02)", padding:8, borderRadius:8}}>
+                      <div style={{fontSize:12, color:"#9ca3af"}}>Distance</div>
+                      <div style={{fontWeight:800}}>{selectedPastTrip.distance_km ? `${selectedPastTrip.distance_km} km` : "-"}</div>
+                    </div>
+                    <div style={{background:"rgba(255,255,255,0.02)", padding:8, borderRadius:8}}>
+                      <div style={{fontSize:12, color:"#9ca3af"}}>Flagged moments</div>
+                      <div style={{fontWeight:800}}>{selectedPastTrip.flagged_moments_count || 0}</div>
+                    </div>
+                    <div style={{background:"rgba(255,255,255,0.02)", padding:8, borderRadius:8}}>
+                      <div style={{fontSize:12, color:"#9ca3af"}}>Max severity</div>
+                      <div style={{fontWeight:800}}>{selectedPastTrip.max_severity || "-"}</div>
+                    </div>
+                  </div>
+
+                  <div style={{marginBottom:10}}>
+                    <div style={{fontSize:12, color:"#9ca3af", marginBottom:6}}>Stress score</div>
+                    <div style={{fontWeight:800, fontSize:18}}>{selectedPastTrip.stress_score != null ? (selectedPastTrip.stress_score) : "-"}</div>
+                  </div>
+
+                  <div style={{marginBottom:10}}>
+                    <div style={{fontSize:12, color:"#9ca3af", marginBottom:6}}>Trip quality</div>
+                    <div style={{fontWeight:800}}>{selectedPastTrip.trip_quality_rating || "N/A"}</div>
+                  </div>
+
+                  {/* any additional raw fields (non-invasive): */}
+                  {/* Trip quality insights */}
+<div style={{marginTop:10}}>
+  <div style={{fontSize:12, color:"#9ca3af", marginBottom:6}}>Trip Insights</div>
+
+  <div style={{display:"grid", gap:8}}>
+    
+    <div style={{
+      display:"flex",
+      justifyContent:"space-between",
+      background:"rgba(255,255,255,0.02)",
+      padding:8,
+      borderRadius:8
+    }}>
+      <div style={{fontSize:12, color:"#9ca3af"}}>Stress Score</div>
+      <div style={{fontWeight:800}}>
+        {selectedPastTrip.stress_score ?? "-"}
+      </div>
+    </div>
+
+    <div style={{
+      display:"flex",
+      justifyContent:"space-between",
+      background:"rgba(255,255,255,0.02)",
+      padding:8,
+      borderRadius:8
+    }}>
+      <div style={{fontSize:12, color:"#9ca3af"}}>Trip Quality Rating</div>
+      <div style={{fontWeight:800}}>
+        {selectedPastTrip.trip_quality_rating ?? "N/A"}
+      </div>
+    </div>
+
+    <div style={{
+      display:"flex",
+      justifyContent:"space-between",
+      background:"rgba(255,255,255,0.02)",
+      padding:8,
+      borderRadius:8
+    }}>
+      <div style={{fontSize:12, color:"#9ca3af"}}>Flagged Moments</div>
+      <div style={{fontWeight:800}}>
+        {selectedPastTrip.flagged_moments_count ?? 0}
+      </div>
+    </div>
+
+  </div>
+</div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   )

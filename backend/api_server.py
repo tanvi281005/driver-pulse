@@ -20,6 +20,9 @@ app = FastAPI()
 trips_path = "data/trips.csv"
 earnings_path = "data/earnings.csv"
 goals_path = "data/driver_goals.csv"
+trip_summaries = pd.read_csv("outputs/trip_summaries.csv")
+trips = pd.read_csv("data/trips.csv")
+earnings = pd.read_csv("data/earnings.csv")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -290,7 +293,19 @@ def end_trip(trip_id: str, req: EndTripRequest):
             result["incidents"].to_csv(inc_path, index=False)
     except Exception:
         pass
+    summary = result.get("trip_summary")
 
+    if summary is not None:
+
+        path = "outputs/trip_summaries.csv"
+
+        if os.path.exists(path):
+            df = pd.read_csv(path)
+            df = pd.concat([df, summary], ignore_index=True)
+        else:
+            df = summary
+
+        df.to_csv(path, index=False)
     # Return summary + incidents + flagged
     return {
         "summary": result.get("trip_summary").to_dict(orient="records") if result.get("trip_summary") is not None else [],
@@ -388,3 +403,94 @@ def shift_status(driver_id: str):
         "start_time": shift["start_time"],
         "shift_id": shift["shift_id"]
     }
+
+@app.get("/driver_summary/{driver_id}")
+def driver_summary(driver_id: str):
+    driver_id = driver_id.strip().upper()
+
+    driver_row = drivers[drivers["driver_id"].str.upper() == driver_id]
+    if driver_row.empty:
+        raise HTTPException(status_code=404, detail="Driver not found")
+
+    driver_trip_rows = trips[trips["driver_id"].str.upper() == driver_id].copy()
+    driver_earn_rows = earnings[earnings["driver_id"].str.upper() == driver_id].copy()
+
+    total_trips = int(len(driver_trip_rows))
+    total_distance = float(driver_trip_rows["distance_km"].sum()) if not driver_trip_rows.empty else 0.0
+    total_fare = float(driver_trip_rows["fare"].sum()) if not driver_trip_rows.empty else 0.0
+    avg_trip_fare = float(driver_trip_rows["fare"].mean()) if not driver_trip_rows.empty else 0.0
+
+    latest_earnings = 0.0
+    if not driver_earn_rows.empty:
+        driver_earn_rows = driver_earn_rows.sort_values("timestamp")
+        latest_earnings = float(driver_earn_rows.iloc[-1].get("cumulative_earnings", 0.0))
+
+    goal_info = compute_driver_goal_prediction(driver_id)
+
+    return {
+        "driver": driver_row.iloc[0].to_dict(),
+        "summary": {
+            "total_trips": total_trips,
+            "total_distance_km": round(total_distance, 2),
+            "total_fare": round(total_fare, 2),
+            "avg_trip_fare": round(avg_trip_fare, 2),
+            "latest_cumulative_earnings": round(latest_earnings, 2),
+            "goal_status": goal_info["status"] if goal_info else "NO_DATA",
+            "goal_probability": goal_info["probability"] if goal_info else 0.0,
+        }
+    }
+
+
+@app.get("/past_trip_summaries/{driver_id}")
+def past_trip_summaries(driver_id: str):
+    trip_summaries = pd.read_csv("outputs/trip_summaries.csv")
+    trips = pd.read_csv("data/trips.csv")
+    driver_id = driver_id.strip().upper()
+
+    driver_trip_summary = trip_summaries[
+        trip_summaries["driver_id"].str.upper() == driver_id
+    ].copy()
+
+    driver_trip_rows = trips[
+        trips["driver_id"].str.upper() == driver_id
+    ][["trip_id", "driver_id", "start_datetime", "end_datetime", "fare", "distance_km", "duration_min"]].copy()
+
+    if driver_trip_summary.empty and driver_trip_rows.empty:
+        return []
+
+    merged = pd.merge(
+        driver_trip_rows,
+        driver_trip_summary,
+        on=["trip_id", "driver_id"],
+        how="left",
+        suffixes=("", "_summary")
+    )
+
+    merged = merged.sort_values("start_datetime", ascending=False)
+
+    merged["start_time"] = pd.to_datetime(
+        merged["start_datetime"], errors="coerce"
+    ).dt.strftime("%Y-%m-%d %H:%M")
+
+    merged["end_time"] = pd.to_datetime(
+        merged["end_datetime"], errors="coerce"
+    ).dt.strftime("%Y-%m-%d %H:%M")
+
+    cols = [
+        "trip_id",
+        "start_time",
+        "end_time",
+        "duration_min",
+        "distance_km",
+        "fare",
+        "flagged_moments_count",
+        "max_severity",
+        "stress_score",
+        "trip_quality_rating",
+    ]
+
+    for c in cols:
+        if c not in merged.columns:
+            merged[c] = None
+
+    return merged[cols].fillna("").to_dict(orient="records")

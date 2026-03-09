@@ -1,0 +1,2 @@
+trip_id,incident_id,start_time,end_time,duration_sec,peak_db,avg_risk,types,count
+TRIP_00cb87,TRIP_00cb87_INC_1,2026-03-09 14:49:08.559019,2026-03-09 14:49:12.601573,4.042554,85.17098970348269,0.400195441220273,"conversation,loud,normal",3
