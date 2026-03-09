@@ -360,8 +360,66 @@ def today_stats(driver_id: str):
 
 @app.get("/driver_goal/{driver_id}")
 def driver_goal(driver_id: str):
-    info = earnings_predictor.goal_target_and_progress(driver_id)
-    return {"target": round(float(info.get("target",0)),2), "progress": float(info.get("progress",0))}
+    """
+    Return the goal target and progress (0..1).
+    Progress is computed using trips that started since the current active shift start.
+    If no active shift, fall back to using trips from the start of today.
+    """
+    driver_id = driver_id.strip()
+
+    # load goals
+    goals = earnings_predictor._load_goals()
+    if goals.empty or "driver_id" not in goals.columns:
+        return {"target": 0.0, "progress": 0.0}
+
+    row = goals[goals["driver_id"] == driver_id]
+    if len(row) == 0:
+        return {"target": 0.0, "progress": 0.0}
+
+    # read target
+    if "target_earnings" in row.columns:
+        target = float(row.iloc[0]["target_earnings"])
+    elif "target" in row.columns:
+        target = float(row.iloc[0]["target"])
+    else:
+        target = 0.0
+
+    # determine start boundary: prefer shift start, else start of today
+    shift = shift_manager.get_active_shift(driver_id)
+    if shift is not None:
+        try:
+            start = pd.to_datetime(shift["start_time"])
+        except Exception:
+            start = pd.to_datetime(datetime.now().strftime("%Y-%m-%d 00:00:00"))
+    else:
+        start = pd.to_datetime(datetime.now().strftime("%Y-%m-%d 00:00:00"))
+
+    # load trips and filter for driver and start >= start
+    try:
+        trips_df = pd.read_csv(TRIPS_PATH)
+    except Exception:
+        trips_df = pd.DataFrame()
+
+    if trips_df.empty or "start_datetime" not in trips_df.columns:
+        return {"target": round(float(target), 2), "progress": 0.0}
+
+    trips_df["start_datetime"] = pd.to_datetime(trips_df["start_datetime"], errors="coerce")
+
+    driver_trips = trips_df[
+        (trips_df["driver_id"] == driver_id) &
+        (trips_df["start_datetime"] >= start)
+    ]
+
+    # sum fares (use 'fare' or fallback 'earnings' if available)
+    fare_col = "fare" if "fare" in trips_df.columns else ("earnings" if "earnings" in trips_df.columns else None)
+    if fare_col is None:
+        progress = 0.0
+    else:
+        total_since_start = float(driver_trips[fare_col].fillna(0).sum())
+        progress = (total_since_start / target) if target > 0 else 0.0
+        progress = max(0.0, min(progress, 1.0))
+
+    return {"target": round(float(target), 2), "progress": float(progress)}
 
 @app.get("/live_events/{driver_id}")
 def live_events(driver_id: str):
