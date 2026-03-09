@@ -410,12 +410,15 @@ await new Promise((resolve) => {
 
   // logout handler (non-destructive: clears common token key and navigates to /login)
   const handleLogout = () => {
-    try { localStorage.removeItem('authToken') } catch(e){}
-    try { localStorage.removeItem('token') } catch(e){}
-    if(window && window.location){
-      window.location.href = "/login"
-    }
+  try {
+    localStorage.removeItem("authToken")
+    localStorage.removeItem("token")
+  } catch (e) {}
+
+  if (typeof window !== "undefined") {
+    window.location.replace("/")
   }
+}
 
   // ----------------------------
   // UI Helpers
