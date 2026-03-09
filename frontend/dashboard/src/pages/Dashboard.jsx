@@ -416,7 +416,7 @@ await new Promise((resolve) => {
   } catch (e) {}
 
   if (typeof window !== "undefined") {
-    window.location.href="/"
+    window.location.reload()
   }
 }
 
