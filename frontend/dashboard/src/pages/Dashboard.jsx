@@ -341,14 +341,21 @@ useEffect(()=>{
 
         if(flagged){
   setLiveEvents(prev => {
-const audioScore = Number(stress.audio_score || 0)
+const db = Number(audio?.audio_level_db || 0)
 const motionScore = Number(stress.motion_score || 0)
 
 let eventType
 
-if (motionScore > audioScore) {
+// audio spike detection
+if (db >= 85) {
+  eventType = audio?.audio_classification || "audio"
+}
+// otherwise motion
+else if (motionScore > 0.35) {
   eventType = "motion"
-} else {
+}
+// fallback
+else {
   eventType = audio?.audio_classification || "audio"
 }
     const ev = {
