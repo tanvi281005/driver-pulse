@@ -20,12 +20,12 @@ class SensorSimulator:
         accel_y = random.uniform(-2,2)
         accel_z = random.uniform(8,11)
 
-        speed = random.uniform(20,60)
+        speed = random.uniform(25,65)
 
         speed_change = random.uniform(-1,1)
 
-        if random.random() < 0.08:
-            speed_change = random.uniform(-2,-1)  
+        if random.random() < 0.12:
+            speed_change = random.uniform(-2.5,-1.2)  
             
         prev_speed = self.accel_data[-1]["speed_kmh"] if self.accel_data else speed
 

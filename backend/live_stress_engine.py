@@ -215,13 +215,13 @@ class LiveStressEngine:
 
             # --- detect strong motion spikes BEFORE combining ---
             motion_spike = (
-                abs(speed_rate) > 0.6 or            # quick change in speed rate
-                abs(delta_speed) > 18 or           # sudden delta_speed (km/h)
-                abs(accel_mag - 9.8) > 1.5         # bumps/potholes
+                abs(speed_rate) > 0.8 or            # quick change in speed rate
+                abs(delta_speed) > 22 or           # sudden delta_speed (km/h)
+                abs(accel_mag - 9.8) > 2.0       # bumps/potholes
             )
             # conservative boost (so a real spike can compete with audio)
             if motion_spike:
-                motion_score = max(motion_score, 0.5)
+                motion_score = max(motion_score, 0.3)
 
             # combine signals (allow either to win, use raw values for decision)
             if audio_score is not None and motion_score is not None:
