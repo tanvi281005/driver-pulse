@@ -61,15 +61,15 @@ class SensorSimulator:
 
         r = random.random()
 
-        if r < 0.05:
+        if r < 0.10:
             db = random.uniform(90,100)
             audio_type = "argument"
 
-        elif r < 0.15:
+        elif r < 0.30:
             db = random.uniform(80,90)
             audio_type = "loud"
 
-        elif r < 0.3:
+        elif r < 0.55:
             db = random.uniform(70,80)
             audio_type = "conversation"
 

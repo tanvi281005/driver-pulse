@@ -341,14 +341,25 @@ useEffect(()=>{
 
         if(flagged){
   setLiveEvents(prev => {
+const audioScore = Number(stress.audio_score || 0)
+    const motionScore = Number(stress.motion_score || 0)
 
+    let eventType
+
+    if (audioScore > 0.45) {
+      eventType = audio?.audio_classification || "audio"
+    } 
+    else if (motionScore > 0.45) {
+      eventType = "motion"
+    } 
+    else {
+      eventType = audio?.audio_classification || "audio"
+    }
     const ev = {
       time: prev.length,
       timestamp: audio?.timestamp || new Date().toISOString(),
 
-      type: stress.motion_score > stress.audio_score
-        ? "motion"
-        : (audio?.audio_classification || "audio"),
+      type: eventType,
 
       db: Number(audio?.audio_level_db || 0),
 
