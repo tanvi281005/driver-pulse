@@ -24,7 +24,7 @@ class SensorSimulator:
 
         speed_change = random.uniform(-1,1)
 
-        if random.random() < 0.15:
+        if random.random() < 0.08:
             speed_change = random.uniform(-2,-1)  
             
         prev_speed = self.accel_data[-1]["speed_kmh"] if self.accel_data else speed

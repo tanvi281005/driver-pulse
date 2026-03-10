@@ -25,7 +25,8 @@ class TripManager:
         self.active_trips[trip_id] = {
             "driver_id": driver_id,
             "simulator": simulator,
-            "events": []  # flagged events for this trip (in-memory)
+            "events": []  ,
+            "last_event_ts": None
         }
         return trip_id
 

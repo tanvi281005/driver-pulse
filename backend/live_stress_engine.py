@@ -175,101 +175,94 @@ class LiveStressEngine:
 
     def evaluate(self, motion, audio):
         # normalize inputs to plain dicts
-        if hasattr(motion, "to_dict"):
-            motion = motion.to_dict()
-        if hasattr(audio, "to_dict"):
-            audio = audio.to_dict()
+            if hasattr(motion, "to_dict"):
+                motion = motion.to_dict()
+            if hasattr(audio, "to_dict"):
+                audio = audio.to_dict()
 
-        # base numbers
-        audio_db = _safe_float(audio.get("audio_level_db"), 0.0)
-        duration = _safe_float(audio.get("sustained_duration_sec"), 0.0)
-        speed = _safe_float(motion.get("speed_kmh"), 0.0)
-        speed_rate = _safe_float(motion.get("speed_change_rate"), 0.0)
+            # base numbers
+            audio_db = _safe_float(audio.get("audio_level_db"), 0.0)
+            duration = _safe_float(audio.get("sustained_duration_sec"), 0.0)
+            speed = _safe_float(motion.get("speed_kmh"), 0.0)
+            speed_rate = _safe_float(motion.get("speed_change_rate"), 0.0)
 
-        # derived audio features (safe, simple)
-        audio["audio_db_delta"] = abs(audio_db - 60)
-        audio["audio_variance"] = audio_db * 0.05
-        audio["noise_spike"] = 1.0 if audio_db > 85 else 0.0
+            # derived audio features (safe, simple)
+            audio["audio_db_delta"] = abs(audio_db - 60)
+            audio["audio_variance"] = audio_db * 0.05
+            audio["noise_spike"] = 1.0 if audio_db > 85 else 0.0
 
-        # derived motion features
-        delta_speed = _safe_float(motion.get("delta_speed"), 0.0)
-        accel_mag = _safe_float(motion.get("accel_magnitude"), 9.8)
+            # derived motion features
+            delta_speed = _safe_float(motion.get("delta_speed"), 0.0)
+            accel_mag = _safe_float(motion.get("accel_magnitude"), 9.8)
 
-        motion["acceleration"] = abs(speed_rate)
-        motion["brake_intensity"] = abs(min(delta_speed, 0))
-        motion["speed_variance"] = abs(delta_speed)
-        motion["jerk"] = abs(speed_rate)
-        motion["speed_delta"] = delta_speed
+            motion["acceleration"] = abs(speed_rate)
+            motion["brake_intensity"] = abs(min(delta_speed, 0))
+            motion["speed_variance"] = abs(delta_speed)
+            motion["jerk"] = abs(speed_rate)
+            motion["speed_delta"] = delta_speed
+            motion["accel_force"] = abs(accel_mag - 9.8)
 
-# very important feature
-        motion["accel_force"] = abs(accel_mag - 9.8)
+            # compute model scores
+            audio_score = self._compute_audio_score(audio) if self.audio_model is not None else None
+            motion_score = self._compute_motion_score(motion) if self.motion_model is not None else None
 
-        # compute model scores
-        audio_score = self._compute_audio_score(audio) if self.audio_model is not None else None
-        motion_score = self._compute_motion_score(motion) if self.motion_model is not None else None
-        # additional motion severity signal
-        motion_severity = self._motion_severity(motion)
+            # additional motion severity signal (heuristic) — always available
+            motion_severity = self._motion_severity(motion)
+            if motion_score is None:
+                motion_score = motion_severity
+            else:
+                motion_score = max(motion_score, motion_severity)
 
-        if motion_score is None:
-            motion_score = motion_severity
-        else:
-            motion_score = max(motion_score, motion_severity)
-        # detect strong motion spikes first
-        motion_spike = (
-    abs(speed_rate) > 0.5 or
-    abs(delta_speed) > 15 or
-    abs(accel_mag - 9.8) > 1.5
-)
-
-        if motion_spike:
-            motion_score = max(motion_score, 0.6)
-
-# combine signals
-        if audio_score is not None and motion_score is not None:
-            raw_stress = max(audio_score, motion_score)    
-            model_used = "audio_motion_heuristic"
-        elif audio_score is not None:
-            raw_stress = float(audio_score)
-            model_used = "audio_only"
-        elif motion_score is not None:
-            raw_stress = float(motion_score)
-            model_used = "motion_only"
-        else:
-            raw_stress = min(audio_db / 100.0, 1.0)
-            model_used = "fallback"
-
-        # smoothing
-        smoothed = self.alpha * raw_stress + (1.0 - self.alpha) * self.previous_stress
-        self.previous_stress = smoothed
-        motion_spike = (
-    abs(speed_rate) > 0.5 or
-    abs(delta_speed) > 15 or
-    abs(accel_mag - 9.8) > 1.5
-)
-
-        if motion_spike:
-            motion_score = max(motion_score, 0.6)
-        # detection logic: allow either raw spike or smoothed value to trigger
-        flagged = (raw_stress > self.flag_threshold) or (smoothed > self.flag_threshold)
-
-        # clamp and return
-        stress_val = max(0.0, min(1.0, float(smoothed)))
-
-        # debug: helpful short log (safe to keep; remove if too verbose)
-        try:
-            print(
-                f"[LIVE_STRESS] raw={raw_stress:.4f} smoothed={smoothed:.4f} "
-                f"audio_score={audio_score} motion_score={motion_score} "
-                f"flagged={flagged} threshold={self.flag_threshold}"
+            # --- detect strong motion spikes BEFORE combining ---
+            motion_spike = (
+                abs(speed_rate) > 0.6 or            # quick change in speed rate
+                abs(delta_speed) > 18 or           # sudden delta_speed (km/h)
+                abs(accel_mag - 9.8) > 1.5         # bumps/potholes
             )
-        except Exception:
-            pass
+            # conservative boost (so a real spike can compete with audio)
+            if motion_spike:
+                motion_score = max(motion_score, 0.5)
 
-        return {
-            "stress": stress_val,
-            "flagged": bool(flagged),
-            "risk_score": stress_val,
-            "model_used": model_used,
-            "audio_score": float(audio_score) if audio_score is not None else 0.0,
-            "motion_score": float(motion_score) if motion_score is not None else 0.0,
-        }
+            # combine signals (allow either to win, use raw values for decision)
+            if audio_score is not None and motion_score is not None:
+                raw_stress = max(float(audio_score), float(motion_score))
+                model_used = "audio_motion_heuristic"
+            elif audio_score is not None:
+                raw_stress = float(audio_score)
+                model_used = "audio_only"
+            elif motion_score is not None:
+                raw_stress = float(motion_score)
+                model_used = "motion_only"
+            else:
+                raw_stress = min(audio_db / 100.0, 1.0)
+                model_used = "fallback"
+
+            # --- IMPORTANT: only trigger flags from raw_stress (not smoothed) ---
+            # smoothing is still used for display continuity, but not for detection
+            smoothed = self.alpha * raw_stress + (1.0 - self.alpha) * self.previous_stress
+            self.previous_stress = smoothed
+
+            # detection logic: only raw spike triggers (avoids persistent events)
+            flagged = (raw_stress > self.flag_threshold)
+
+            # clamp and return
+            stress_val = max(0.0, min(1.0, float(smoothed)))
+
+            # debug: helpful short log
+            try:
+                print(
+                    f"[LIVE_STRESS] raw={raw_stress:.4f} smoothed={smoothed:.4f} "
+                    f"audio_score={(audio_score or 0):.3f} motion_score={(motion_score or 0):.3f} "
+                    f"motion_spike={motion_spike} flagged={flagged} threshold={self.flag_threshold}"
+                )
+            except Exception:
+                pass
+
+            return {
+                "stress": stress_val,
+                "flagged": bool(flagged),
+                "risk_score": stress_val,
+                "model_used": model_used,
+                "audio_score": float(audio_score) if audio_score is not None else 0.0,
+                "motion_score": float(motion_score) if motion_score is not None else 0.0,
+            }
