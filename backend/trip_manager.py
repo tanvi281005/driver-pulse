@@ -52,15 +52,33 @@ class TripManager:
             is_flagged = False
 
         if is_flagged:
+            audio_score = float(stress.get("audio_score", 0))
+            motion_score = float(stress.get("motion_score", 0))
+
+# decide event type
+            if motion_score > audio_score:
+                event_type = "motion"
+            else:
+                event_type = a.get("audio_classification", "audio")
+
             event = {
-                "trip_id": trip_id,
-                "driver_id": entry["driver_id"],
-                "timestamp": a.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
-                "type": a.get("audio_classification", "unknown"),
-                "db": float(a.get("audio_level_db", 0) or 0),
-                "risk_score": float(stress.get("risk_score", 0.0)),
-                "model_used": stress.get("model_used", "")
-            }
+    "trip_id": trip_id,
+    "driver_id": entry["driver_id"],
+    "timestamp": a.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+
+    "type": event_type,
+
+    "audio_db": float(a.get("audio_level_db", 0) or 0),
+    "speed_kmh": float(m.get("speed_kmh", 0) or 0),
+    "speed_change_rate": float(m.get("speed_change_rate", 0) or 0),
+    "accel_magnitude": float(m.get("accel_magnitude", 0) or 0),
+
+    "audio_score": audio_score,
+    "motion_score": motion_score,
+
+    "risk_score": float(stress.get("risk_score", 0.0)),
+    "model_used": stress.get("model_used", "")
+}
             entry["events"].append(event)
 
             # DEBUG log so you can see server-side when an event is detected

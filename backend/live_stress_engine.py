@@ -78,7 +78,7 @@ class LiveStressEngine:
         self.motion_features = None
 
         # detection threshold and smoothing
-        self.flag_threshold = 0.45
+        self.flag_threshold = 0.35
         self.alpha = 0.6  # smoothing weight for current value
         self.previous_stress = 0.0
 
@@ -154,6 +154,24 @@ class LiveStressEngine:
         except Exception as e:
             print("motion scoring failed:", e)
             return None
+        
+    def _motion_severity(self, motion):
+        speed_rate = _safe_float(motion.get("speed_change_rate"), 0)
+        delta_speed = _safe_float(motion.get("delta_speed"), 0)
+        accel_mag = _safe_float(motion.get("accel_magnitude"), 9.8)
+
+    # harsh braking / acceleration
+        accel_event = min(abs(speed_rate) / 0.8, 1.0)
+
+    # sudden speed change
+        delta_event = min(abs(delta_speed) / 20.0, 1.0)
+
+    # bumps / potholes
+        bump_event = min(abs(accel_mag - 9.8) / 2.0, 1.0)
+
+        severity = 0.4 * accel_event + 0.4 * delta_event + 0.2 * bump_event
+
+        return max(0.0, min(1.0, severity))
 
     def evaluate(self, motion, audio):
         # normalize inputs to plain dicts
@@ -174,19 +192,31 @@ class LiveStressEngine:
         audio["noise_spike"] = 1.0 if audio_db > 85 else 0.0
 
         # derived motion features
-        motion["acceleration"] = speed_rate
-        motion["brake_intensity"] = abs(min(speed_rate, 0))
-        motion["speed_variance"] = speed * 0.1
-        motion["jerk"] = abs(speed_rate) * 0.5
-        motion["speed_delta"] = speed_rate
+        delta_speed = _safe_float(motion.get("delta_speed"), 0.0)
+        accel_mag = _safe_float(motion.get("accel_magnitude"), 9.8)
+
+        motion["acceleration"] = abs(speed_rate)
+        motion["brake_intensity"] = abs(min(delta_speed, 0))
+        motion["speed_variance"] = abs(delta_speed)
+        motion["jerk"] = abs(speed_rate)
+        motion["speed_delta"] = delta_speed
+
+# very important feature
+        motion["accel_force"] = abs(accel_mag - 9.8)
 
         # compute model scores
         audio_score = self._compute_audio_score(audio) if self.audio_model is not None else None
         motion_score = self._compute_motion_score(motion) if self.motion_model is not None else None
+        # additional motion severity signal
+        motion_severity = self._motion_severity(motion)
 
+        if motion_score is None:
+            motion_score = motion_severity
+        else:
+            motion_score = max(motion_score, motion_severity)
         # heuristic combination (audio heavier)
         if audio_score is not None and motion_score is not None:
-            raw_stress = 0.65 * float(audio_score) + 0.35 * float(motion_score)
+            raw_stress =  max(audio_score, motion_score)
             model_used = "audio_motion_heuristic"
         elif audio_score is not None:
             raw_stress = float(audio_score)
@@ -201,7 +231,14 @@ class LiveStressEngine:
         # smoothing
         smoothed = self.alpha * raw_stress + (1.0 - self.alpha) * self.previous_stress
         self.previous_stress = smoothed
+        motion_spike = (
+    abs(speed_rate) > 0.5 or
+    abs(delta_speed) > 15 or
+    abs(accel_mag - 9.8) > 1.5
+)
 
+        if motion_spike:
+            motion_score = max(motion_score, 0.6)
         # detection logic: allow either raw spike or smoothed value to trigger
         flagged = (raw_stress > self.flag_threshold) or (smoothed > self.flag_threshold)
 
