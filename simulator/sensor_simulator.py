@@ -24,8 +24,14 @@ class SensorSimulator:
 
         speed_change = random.uniform(-1,1)
 
-        if random.random() < 0.05:
-            speed_change = random.uniform(-2,-1)   # harsh brake
+        if random.random() < 0.15:
+            speed_change = random.uniform(-2,-1)  
+            
+        prev_speed = self.accel_data[-1]["speed_kmh"] if self.accel_data else speed
+
+        delta_speed = speed - prev_speed
+
+        accel_magnitude = (accel_x**2 + accel_y**2 + accel_z**2) ** 0.5
 
         row = {
 
@@ -37,8 +43,11 @@ class SensorSimulator:
             "accel_y": accel_y,
             "accel_z": accel_z,
 
-            "speed_kmh": speed,
-            "speed_change_rate": speed_change
+            "accel_magnitude": accel_magnitude,
+
+        "speed_kmh": speed,
+        "speed_change_rate": speed_change,
+        "delta_speed": delta_speed
         }
 
         self.accel_data.append(row)

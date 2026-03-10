@@ -214,9 +214,19 @@ class LiveStressEngine:
             motion_score = motion_severity
         else:
             motion_score = max(motion_score, motion_severity)
-        # heuristic combination (audio heavier)
+        # detect strong motion spikes first
+        motion_spike = (
+    abs(speed_rate) > 0.5 or
+    abs(delta_speed) > 15 or
+    abs(accel_mag - 9.8) > 1.5
+)
+
+        if motion_spike:
+            motion_score = max(motion_score, 0.6)
+
+# combine signals
         if audio_score is not None and motion_score is not None:
-            raw_stress =  max(audio_score, motion_score)
+            raw_stress = max(audio_score, motion_score)    
             model_used = "audio_motion_heuristic"
         elif audio_score is not None:
             raw_stress = float(audio_score)
