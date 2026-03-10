@@ -156,10 +156,17 @@ export default function Dashboard({ driver }) {
     return () => clearInterval(id)
   }, [latestStress])
 
-  useEffect(()=>{
-  if(latestStress > 0.75){
+ const lastToast = useRef(0)
+
+useEffect(()=>{
+
+  const now = Date.now()
+
+  if(latestStress > 0.75 && now - lastToast.current > 5000){
     toast.warning("⚠ Driver fatigue detected")
+    lastToast.current = now
   }
+
 },[latestStress])
 
   // compute cumulative earnings series for chart
@@ -333,20 +340,30 @@ export default function Dashboard({ driver }) {
         else setRiskLevel("SAFE")
 
         if(flagged){
-          setLiveEvents(prev => {
-            const ev = {
-              time: prev.length,
-              timestamp: audio?.timestamp || new Date().toISOString(),
-              type: audio?.audio_classification || "stress",
-              db: Number(audio?.audio_level_db || 0),
-              risk: stressValue,
-              model_used: stress.model_used || ""
-            }
-            const next = [...prev, ev]
-            if(next.length > 500) next.shift()
-            return next
-          })
-        }
+  setLiveEvents(prev => {
+
+    const ev = {
+      time: prev.length,
+      timestamp: audio?.timestamp || new Date().toISOString(),
+
+      type: stress.motion_score > stress.audio_score
+        ? "motion"
+        : (audio?.audio_classification || "audio"),
+
+      db: Number(audio?.audio_level_db || 0),
+
+      speed_change_rate: res.data.motion?.speed_change_rate || 0,
+
+      risk: stressValue,
+      model_used: stress.model_used || ""
+    }
+
+    const next = [...prev, ev]
+    if(next.length > 500) next.shift()
+
+    return next
+  })
+}
       }catch(e){
         console.error("trip_step err", e)
       }
@@ -687,7 +704,9 @@ await new Promise((resolve) => {
               return (
                 <div key={i} style={{display:"flex", justifyContent:"space-between", gap:12, alignItems:"center", padding:10, borderRadius:8, background:"rgba(255,255,255,0.01)"}}>
                   <div>
-                    <div style={{fontWeight:800}}>{e.type} — {e.db} dB</div>
+                    <div style={{fontWeight:800}}>{e.type === "motion"
+  ? `motion — Δspeed ${Math.abs(e.speed_change_rate || 0).toFixed(1)} km/h`
+  : `${e.type} — ${e.db} dB`}</div>
                     <div style={{fontSize:12, color:"#9ca3af"}}>{time}</div>
                   </div>
                   <div style={{display:"flex", flexDirection:"column", alignItems:"flex-end"}}>

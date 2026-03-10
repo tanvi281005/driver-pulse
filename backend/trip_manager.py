@@ -51,8 +51,15 @@ class TripManager:
             is_flagged = bool(stress.get("flagged", False))
         except Exception:
             is_flagged = False
+        now = datetime.now()
 
         if is_flagged:
+            last = entry.get("last_event_ts")
+
+            if last and (now - last).total_seconds() < 5:
+                return m, a, stress
+
+            entry["last_event_ts"] = now
             audio_score = float(stress.get("audio_score", 0))
             motion_score = float(stress.get("motion_score", 0))
 
